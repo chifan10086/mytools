@@ -1,0 +1,67 @@
+Amazon Linux 2
+
+如果使用亚马逊 Linux 2，请输入以下内容：
+
+sudo yum -y install openssl-devel gcc
+wget https://download.redis.io/releases/redis-7.2.5.tar.gz
+tar xvzf redis-7.2.5.tar.gz
+cd redis-7.2.5
+make distclean
+make redis-cli BUILD_TLS=yes
+sudo install -m 755 src/redis-cli /usr/local/bin/
+
+Amazon Linux
+
+如果使用亚马逊 Linux，请输入以下内容：
+sudo yum install gcc jemalloc-devel openssl-devel tcl tcl-devel clang wget
+wget http://download.redis.io/redis-7.2.5.tar.gz
+tar xvzf redis-7.2.5.tar.gz
+cd redis-7.2.5
+make redis-cli CC=clang BUILD_TLS=yes
+sudo install -m 755 src/redis-cli /usr/local/bin/
+在 Amazon Linux 上，您可能还需要执行以下额外步骤：
+sudo yum install clang
+CC=clang make
+sudo make install
+下载并安装 redis-cli 实用程序后，建议您运行可选命令。make-test
+
+要连接到启用了加密和身份验证的集群，请输入以下命令：
+redis-cli -h Primary or Configuration Endpoint --tls -a 'your-password' -p 6379
+注意
+如果你在亚马逊 Linux 2023 上安装 redis6，你现在可以使用redis6-cli以下命令代替：redis-cli
+redis6-cli -h Primary or Configuration Endpoint --tls -p 6379
+要使用 redis-cli 通过 stunnel 连接到启用传输中加密的 Redis OSS 集群，请按照以下步骤操作。
+
+用于SSH连接到您的客户端并进行安装stunnel。
+sudo yum install stunnel
+使用下面提供的输出作为模板，运行以下命令'/etc/stunnel/redis-cli.conf'同时创建和编辑文件，将 ElastiCache (RedisOSS) 集群终端节点添加到一个或多个连接参数中。
+vi /etc/stunnel/redis-cli.conf
+
+				
+fips = no
+setuid = root
+setgid = root
+pid = /var/run/stunnel.pid
+debug = 7 
+delay = yes
+options = NO_SSLv2
+options = NO_SSLv3
+[redis-cli]
+   client = yes
+   accept = 127.0.0.1:6379
+   connect = primary.ssltest.wif01h.use1.cache.amazonaws.com:6379
+[redis-cli-replica]
+   client = yes
+   accept = 127.0.0.1:6380
+   connect = ssltest-02.ssltest.wif01h.use1.cache.amazonaws.com:6379
+在此示例中，配置文件具有两个连接，即 redis-cli 和 redis-cli-replica。参数设置如下所示：
+
+client 设置为 yes（是）以指定此 Stunnel 实例是客户端。
+
+accept 设置为客户端 IP。在本示例中，主服务器在端口 6379 上设置为 Redis 的OSS默认值 127.0.0.1。副本必须调用另一个端口并设置为 6380。您可以使用临时端口 1024-65535。有关更多信息，请参阅 A ma VPC zon 用户指南中的临时端口。
+
+连接设置为 Redis OSS 服务器端点。有关更多信息，请参阅 查找连接端点。
+sudo stunnel /etc/stunnel/redis-cli.conf
+
+https://docs.aws.amazon.com/zh_cn/AmazonElastiCache/latest/red-ug/connect-tls.html
+

@@ -1,0 +1,29 @@
+JSON Lines 格式
+导出语句
+
+clickhouse-client -h 127.0.0.1 --port 9000 -u default --password XXX -d mylog \
+ --query "SELECT * from mylog.mylog" --format JSONEachRow > 2021.jsonl
+导入语句
+
+clickhouse-client -h 127.0.0.1 --port 9000 -u default --password XXX -d mylog \
+ --query "INSERT INTO mylog.mylog FORMAT JSONEachRow" < 2021.jsonl
+
+
+
+
+
+
+clickhouse（导出为csv格式）：
+clickhouse-client -h 127.0.0.1 --database="db" --query="select * from db.test_table FORMAT CSV" > test.csv （不带表头）
+clickhouse-client -h 127.0.0.1 --database="db" --query="select * form db.test_table" --format CSVWithNames> test.csv(带表头）
+
+clickhouse（导出为json格式）：
+clickhouse-client -h 127.0.0.1 --database="db" --query="select * form db.test_table" --format CSVWithNames> test.json(带表头）
+
+clickhouse（导入为csv格式）
+clickhouse-client -h 127.0.0.1 --database="db" --query="insert into db.test_table FORMAT CSV" < test.csv （不带表头）
+clickhouse-client -h 127.0.0.1 --database="db" --query="insert into db.test_table" --format CSVWithNames < test.csv(带表头）
+
+clickhouse（导入为json格式）
+clickhouse-client -h 127.0.0.1 --database="db" --query="insert into db.test_table" --format CSVWithNames < test.json(带表头）
+
