@@ -25,13 +25,13 @@ with open(filename, 'w', encoding="utf-8", newline="") as f:
         for i in range(0, num_of_ins):
             InstanceId = res['Reservations'][num]['Instances'][i]['InstanceId']   #根据返回的字典取出对应属性值，返回的字典可到json解析网站解析方便查看结构，列表元素取值要加下标，即num和i
             InstanceType = res['Reservations'][num]['Instances'][i]['InstanceType']
-            Tags = res['Reservations'][num]['Instances'][i]['Tags'][0]['Value']
+            Tags = res['Reservations'][num]['Instances'][i].get('Tags', [{'Value': 'N/A'}])[0]['Value']
             #CoreCount = res['Reservations'][num]['Instances'][i]['CpuOptions']['CoreCount']
             Platform = res['Reservations'][num]['Instances'][i]['Platform'] if 'Platform' in \
                                                                                res['Reservations'][num]['Instances'][
                                                                                    i] else "linux"   
-            PrivateIpAddress = res['Reservations'][num]['Instances'][i]['PrivateIpAddress']
-            PublicIpAddress = res['Reservations'][num]['Instances'][i]['PublicIpAddress']
+            PrivateIpAddress = res['Reservations'][num]['Instances'][i].get('PrivateIpAddress', 'N/A')
+            PublicIpAddress = res['Reservations'][num]['Instances'][i].get('PublicIpAddress', 'N/A')
             InstanceTypes = ec2.describe_instance_types(InstanceTypes=[InstanceType])    #调用另一个api获取实例类型的详细信息以取得cpu个数和内存大小的值
             MemoryInfo = InstanceTypes['InstanceTypes'][0]['MemoryInfo']['SizeInMiB']
             VCpuInfo = InstanceTypes['InstanceTypes'][0]['VCpuInfo']['DefaultVCpus']
