@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import json
+import subprocess
+import hashlib, hmac, json, os, sys, time
+from datetime import datetime
+from config import secret_id, secret_key
+
+
+
+service = "teo"
+host = "teo.tencentcloudapi.com"
+endpoint = "https://" + host
+version = "2022-09-01"
+algorithm = "TC3-HMAC-SHA256"
+timestamp = int(time.time())
+date = datetime.utcfromtimestamp(timestamp).strftime("%Y-%m-%d")
+
+# ************* 步骤 1：拼接规范请求串 *************
+
+http_request_method = "POST"
+canonical_uri = "/"
+canonical_querystring = ""
+ct = "application/json; charset=utf-8"
+signed_headers = "content-type;host;x-tc-action"
+
+
+
+
+
+
+# ************* 步骤 3：计算签名 *************
+# 计算签名摘要函数
+def sign(key, msg):
+    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+
+def buyplan():
+    action = "CreatePlan"
+    params = {
+       "PlanType": "basic",
+    }
+    canonical_headers = "content-type:%s\nhost:%s\nx-tc-action:%s\n" % (ct, host, action.lower())
+    payload = json.dumps(params)
+    hashed_request_payload = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    canonical_request = (http_request_method + "\n" +
+                        canonical_uri + "\n" +
+                        canonical_querystring + "\n" +
+                        canonical_headers + "\n" +
+                        signed_headers + "\n" +
+                        hashed_request_payload)
+    credential_scope = date + "/" + service + "/" + "tc3_request"
+    hashed_canonical_request = hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
+    string_to_sign = (algorithm + "\n" +
+                    str(timestamp) + "\n" +
+                    credential_scope + "\n" +
+                    hashed_canonical_request)
+    secret_date = sign(("TC3" + secret_key).encode("utf-8"), date)
+    secret_service = sign(secret_date, service)
+    secret_signing = sign(secret_service, "tc3_request")
+    signature = hmac.new(secret_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    print(signature)
+
+    # ************* 步骤 4：拼接 Authorization *************
+    authorization = (algorithm + " " +
+                    "Credential=" + secret_id + "/" + credential_scope + ", " +
+                    "SignedHeaders=" + signed_headers + ", " +
+                    "Signature=" + signature)
+    print(authorization)
+    command1 = 'curl -X POST ' + endpoint + ' -H "Authorization: ' + authorization + '"'+ ' -H "Content-Type: application/json; charset=utf-8"'+ ' -H "Host: ' + host + '"'+ ' -H "X-TC-Action: ' + action + '"'+ ' -H "X-TC-Timestamp: ' + str(timestamp) + '"'+ ' -H "X-TC-Version: ' + version + '"'+ " -d '" + payload + "'"
+    print(params)
+    print(command1)
+    pipe = subprocess.Popen(command1, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    print('命令返回结果')
+    result = pipe.stdout.read().decode()
+    data = json.loads(result)
+    print(data)
+    PlanId = data['Response']['PlanId']
+    print(PlanId)
+    print(type(PlanId))
+    return PlanId
+
+
+def fakeplan():
+    return "edgeone-319iy7y0rke1"
+
+domains = []
+
+with open('domains.txt', 'r', encoding='utf-8') as file:
+    # 逐行读取文件，并去除末尾的空行
+    for line in file:
+        line = line.rstrip()  # 去除行末尾的空白字符，包括换行符
+        if line:  # 仅处理非空行
+            domains.append(line)
+
+
+def domainbindplan(domain,PlanId):
+    action = "CreateZone"
+    params = {
+        "Type": "full",
+        "ZoneName": domain,
+        "Area": "overseas",
+        "PlanId": PlanId
+    }
+    canonical_headers = "content-type:%s\nhost:%s\nx-tc-action:%s\n" % (ct, host, action.lower())
+    payload = json.dumps(params)
+    hashed_request_payload = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    canonical_request = (http_request_method + "\n" +
+                        canonical_uri + "\n" +
+                        canonical_querystring + "\n" +
+                        canonical_headers + "\n" +
+                        signed_headers + "\n" +
+                        hashed_request_payload)
+    credential_scope = date + "/" + service + "/" + "tc3_request"
+    hashed_canonical_request = hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
+    string_to_sign = (algorithm + "\n" +
+                    str(timestamp) + "\n" +
+                    credential_scope + "\n" +
+                    hashed_canonical_request)
+    secret_date = sign(("TC3" + secret_key).encode("utf-8"), date)
+    secret_service = sign(secret_date, service)
+    secret_signing = sign(secret_service, "tc3_request")
+    signature = hmac.new(secret_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    print(signature)
+
+    # ************* 步骤 4：拼接 Authorization *************
+    authorization = (algorithm + " " +
+                    "Credential=" + secret_id + "/" + credential_scope + ", " +
+                    "SignedHeaders=" + signed_headers + ", " +
+                    "Signature=" + signature)
+    print(authorization)
+    command1 = 'curl -X POST ' + endpoint + ' -H "Authorization: ' + authorization + '"'+ ' -H "Content-Type: application/json; charset=utf-8"'+ ' -H "Host: ' + host + '"'+ ' -H "X-TC-Action: ' + action + '"'+ ' -H "X-TC-Timestamp: ' + str(timestamp) + '"'+ ' -H "X-TC-Version: ' + version + '"'+ " -d '" + payload + "'"
+    print(params)
+    print(command1)
+    pipe = subprocess.Popen(command1, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    print('命令返回结果')
+    print(pipe.stdout.read().decode())
+
+
+
+#print('curl -X POST ' + endpoint + ' -H "Authorization: ' + authorization + '"'+ ' -H "Content-Type: application/json; charset=utf-8"'+ ' -H "Host: ' + host + '"'+ ' -H "X-TC-Action: ' + action + '"'+ ' -H "X-TC-Timestamp: ' + str(timestamp) + '"'+ ' -H "X-TC-Version: ' + version + '"'+ " -d '" + payload + "'")
+
+
+tcid = ['edgeone-32h3qf83rndt','edgeone-32h3psv6hurd','edgeone-32h3p3wr0lix','edgeone-32h3rw3iejax','edgeone-32h3qo40rs55','edgeone-331nkj3ra47j','edgeone-331nkcqalzax','edgeone-331nl5y5up6h','edgeone-331njy4hzewp','edgeone-332hgwcyfu2h','edgeone-332hgq29n9r5','edgeone-332hftycmtcx','edgeone-332kwn3tgfdb','edgeone-332kx2cx4yd5','edgeone-31yt8zi12iap','edgeone-31yt9mrp0opt','edgeone-31ytab2jgr21','edgeone-31ytah6uicxl','edgeone-320kkz5pfh9d','edgeone-33886bhw6xb5','edgeone-33886ke36cyp','edgeone-3388709ny7zt']
+print(len(tcid))
+
+
+for domain,planid in zip(domains,tcid):
+    domainbindplan(domain,planid)
