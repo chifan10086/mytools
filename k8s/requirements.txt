@@ -1,0 +1,1 @@
+# update_deployment_image.py 使用标准库 urllib，无需额外依赖
