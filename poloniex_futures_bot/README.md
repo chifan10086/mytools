@@ -22,6 +22,9 @@ Python 实现的 Poloniex BTC 永续合约自动交易机器人：单向持仓�
 
 ```
 poloniex_futures_bot/
+├── Dockerfile       # Docker 镜像
+├── docker-compose.yml  # Bot + Redis 编排
+├── DOCKER.md        # Docker 运行详细步骤
 ├── config.py        # API、策略与风控参数
 ├── rest_client.py   # REST 鉴权、签名、限频重试
 ├── strategy.py      # 多策略：EMA/MACD/RSI/组合，止损止盈
@@ -51,18 +54,21 @@ poloniex_futures_bot/
 - `MAX_CONSECUTIVE_LOSSES`：连续亏损次数上限（默认 3）
 - `DAILY_LOSS_RATIO`：当日亏损占权益比例上限（默认 0.05）
 - `PAPER_MODE`：`True` 为模拟，`False` 为实盘
-- **模拟交易**（可不填 API Key）：
+- **模拟交易**（可不填 API Key）；key、token 等**直接写在 config.py**，不用环境变量：
   - `SIMULATE_ONLY`：`True` 时仅用公开 K 线、自动多空、全仓 `LEVERAGE` 倍（默认 30）
   - `LEVERAGE`：全仓杠杆倍数
-  - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`：决策后发到 Telegram（可复用项目内 `bot/config.py` 的 `API_TOKEN` 与 `ALLOWED_GROUP_ID`）
-  - `REDIS_URL`：如 `redis://127.0.0.1:6379/0`，记录每笔开平仓（价格、方向、止损止盈等）到 `poloniex_simulate:trades` 列表与 `poloniex_simulate:last_trade`
+  - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`：决策后发到 Telegram，在 config 中填写
+  - `REDIS_URL`：在 config 中填写，如 `redis://127.0.0.1:6379/0`，记录到 `poloniex_simulate:trades` 与 `poloniex_simulate:last_trade`
 
 ## 运行
 
+**本机直接运行：**
 ```bash
 cd poloniex_futures_bot
 python3 main.py
 ```
+
+**Docker 运行（Bot + Redis）：** 见 [DOCKER.md](DOCKER.md)，含 Dockerfile、docker-compose 与详细步骤。
 
 - 默认 **Paper 模式**，初始权益 10000，不发起真实订单。
 - 实盘前请先在 Poloniex 确认合约规格（如张数、面值），必要时在 `exchange.py` 中调整 `CONTRACT_SIZE` 及权益/持仓解析逻辑。

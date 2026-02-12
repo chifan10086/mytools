@@ -1,4 +1,5 @@
 # Poloniex BTC 永续合约机器人配置
+# 所有 key、token 等直接在本文件中填写，勿用环境变量传递敏感信息
 
 # API（在 Poloniex 后台创建，需开通期货交易权限）
 API_KEY = ""
@@ -47,11 +48,11 @@ SIMULATE_ONLY = True
 # 全仓杠杆倍数（模拟/实盘下单时的名义仓位 = 权益 * LEVERAGE）
 LEVERAGE = 30
 
-# Telegram 通知（决策后发到群组，可复用 bot/config 的 API_TOKEN 与 ALLOWED_GROUP_ID）
+# Telegram 通知（决策后发到群组，直接填写）
 TELEGRAM_BOT_TOKEN = ""
 TELEGRAM_CHAT_ID = None  # 如 -1001234567890，不填则不发
 
-# Redis 记录交易（不填则不用 Redis）
+# Redis 记录交易（直接填写；Docker Compose 时改为 redis://redis:6379/0）
 REDIS_URL = "redis://127.0.0.1:6379/0"
 
 # 请求
