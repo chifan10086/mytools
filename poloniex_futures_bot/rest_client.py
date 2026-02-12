@@ -60,6 +60,7 @@ def _request(
     for attempt in range(RATE_LIMIT_RETRY + 1):
         try:
             req = urllib.request.Request(url, method=method)
+            req.add_header("User-Agent", "PoloniexBot/1.0 (Python)")
             data = None
             if body is not None:
                 data = json.dumps(body).encode("utf-8")

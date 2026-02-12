@@ -25,9 +25,17 @@ def send_telegram(text: str) -> bool:
     data = urllib.parse.urlencode(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    req.add_header("User-Agent", "PoloniexBot/1.0 (Python)")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status == 200
+    except urllib.error.HTTPError as e:
+        # 403 多为 Token 错误、Chat ID 错误或 Bot 未加入群组
+        if e.code == 403:
+            body = e.read().decode("utf-8", errors="ignore") if e.fp else ""
+            import logging
+            logging.getLogger(__name__).warning("Telegram 403: %s %s", e.reason, body[:200])
+        return False
     except Exception:
         return False
 
