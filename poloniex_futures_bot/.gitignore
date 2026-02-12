@@ -1,0 +1,8 @@
+# 勿提交 API 密钥
+config_local.py
+.env
+*.key
+
+__pycache__/
+*.pyc
+.Python

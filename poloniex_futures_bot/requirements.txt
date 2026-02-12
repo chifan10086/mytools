@@ -1,0 +1,5 @@
+# Poloniex BTC 永续合约机器人
+# 模拟交易写 Redis 需要
+redis>=4.0.0
+# 如需 requests 可取消下一行
+# requests>=2.28.0

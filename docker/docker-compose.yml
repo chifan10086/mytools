@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: jenkins
+    restart: unless-stopped
+    user: root
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - ./Jenkins/data:/var/jenkins_home
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      - app-net
+
+  mq:
+    image: rabbitmq:3-management
+    container_name: mq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # 管理控制台
+    volumes:
+      - ./Mq/data:/var/lib/rabbitmq
+    environment:
+      - TZ=Asia/Shanghai
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=admin
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    driver: bridge

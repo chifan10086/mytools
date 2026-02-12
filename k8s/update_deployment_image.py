@@ -15,7 +15,7 @@
 
 # ========== 请在此填写 Rancher 配置 ==========
 RANCHER_URL = 'https://10.10.32.84'           # Rancher 地址，如 https://rancher.example.com（不要末尾斜杠）
-RANCHER_TOKEN = 'token-7pdgz:gwx46dtkz8cs7p9kd2bmt7t7kkj7cd8cd59d5jgs4hr66jlktrs2db'         # Rancher API Token（用户 -> API Keys 创建）
+RANCHER_TOKEN =          # Rancher API Token（用户 -> API Keys 创建）
 RANCHER_CLUSTER_ID = 'c-drqnr'    # 集群 ID；若报 404 可改为仅集群部分，如 c-drqnr（不要 :p-xxx）
 RANCHER_INSECURE = True                   # True=跳过 SSL 证书验证（自签名/内网证书时使用）
 # 基础镜像地址。完整镜像 = 基础地址 + 镜像名:tag（镜像名常与 deployment 同名）
