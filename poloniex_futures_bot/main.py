@@ -20,17 +20,20 @@ from exchange import (
     position_size_from_equity,
     position_size_full_leverage,
 )
-from notify import notify_trade, notify_close
+from notify import notify_trade, notify_close, save_equity_redis, notify_position_report
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 # 持仓后经过的轮询周期数，用于 MAX_HOLD_CYCLES 到时强制平仓
 _cycles_with_position = 0
+# 每 10 分钟向 TG 汇报持仓盈亏（仅在有持仓时）
+_position_report_interval = 600
+_last_position_report_time = 0.0
 
 
 def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
-    global _cycles_with_position
+    global _cycles_with_position, _last_position_report_time
     # 1. K 线
     data = fetch_klines()
     if not data:
@@ -47,6 +50,12 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
         logger.warning("权益<=0，跳过")
         return
 
+    # 2.1 每 10 分钟汇报持仓盈亏（仅在有持仓时）
+    if pos_side and pos_size > 0 and paper is not None:
+        if time.time() - _last_position_report_time >= _position_report_interval:
+            notify_position_report(pos_side, entry_price, mark_price, pos_size, equity, INITIAL_EQUITY)
+            _last_position_report_time = time.time()
+
     # 3. 风控
     can_trade, reason = risk.can_trade(equity)
     if not can_trade:
@@ -60,7 +69,8 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             pnl = close_position(pos_side, pos_size, mark_price, paper)
             risk.record_trade(pnl, equity)
             _cycles_with_position = 0
-            notify_close(pos_side, mark_price, pnl, sl_tp)
+            equity_after = get_equity_and_position(paper, mark_price)[0]
+            notify_close(pos_side, mark_price, pnl, sl_tp, current_equity=equity_after, initial_equity=INITIAL_EQUITY)
             logger.info("平仓 %s @ %s, 盈亏=%.2f", sl_tp, mark_price, pnl)
             return
         # 最大持仓周期：到点强制平仓，便于频繁重新开仓
@@ -70,7 +80,8 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
                 pnl = close_position(pos_side, pos_size, mark_price, paper)
                 risk.record_trade(pnl, equity)
                 _cycles_with_position = 0
-                notify_close(pos_side, mark_price, pnl, "最大持仓周期")
+                equity_after = get_equity_and_position(paper, mark_price)[0]
+                notify_close(pos_side, mark_price, pnl, "最大持仓周期", current_equity=equity_after, initial_equity=INITIAL_EQUITY)
                 logger.info("平仓 最大持仓周期 @ %s, 盈亏=%.2f", mark_price, pnl)
                 return
     else:
@@ -91,34 +102,44 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
         pnl = close_position("LONG", pos_size, mark_price, paper)
         risk.record_trade(pnl, equity)
         _cycles_with_position = 0
+        equity_after = get_equity_and_position(paper, mark_price)[0]
         logger.info("平多 @ %s, 盈亏=%.2f，准备开空", mark_price, pnl)
-        notify_close("LONG", mark_price, pnl, "反向开空")
+        notify_close("LONG", mark_price, pnl, "反向开空", current_equity=equity_after, initial_equity=INITIAL_EQUITY)
         open_short(mark_price, size, sl, tp, paper)
-        notify_trade("开空", mark_price, size, sl, tp)
+        equity_now = get_equity_and_position(paper, mark_price)[0]
+        notify_trade("开空", mark_price, size, sl, tp, current_equity=equity_now, initial_equity=INITIAL_EQUITY)
         logger.info("开空 size=%.4f sl=%s tp=%s", size, sl, tp)
         return
     if pos_side == "SHORT" and direction == 1:
         pnl = close_position("SHORT", pos_size, mark_price, paper)
         risk.record_trade(pnl, equity)
         _cycles_with_position = 0
+        equity_after = get_equity_and_position(paper, mark_price)[0]
         logger.info("平空 @ %s, 盈亏=%.2f，准备开多", mark_price, pnl)
-        notify_close("SHORT", mark_price, pnl, "反向开多")
+        notify_close("SHORT", mark_price, pnl, "反向开多", current_equity=equity_after, initial_equity=INITIAL_EQUITY)
         open_long(mark_price, size, sl, tp, paper)
-        notify_trade("开多", mark_price, size, sl, tp)
+        equity_now = get_equity_and_position(paper, mark_price)[0]
+        notify_trade("开多", mark_price, size, sl, tp, current_equity=equity_now, initial_equity=INITIAL_EQUITY)
         logger.info("开多 size=%.4f sl=%s tp=%s", size, sl, tp)
         return
 
     # 无仓或同向不加仓
     if pos_side:
+        if paper:
+            save_equity_redis(equity, INITIAL_EQUITY)
         return
     if direction == 1:
         open_long(mark_price, size, sl, tp, paper)
-        notify_trade("开多", mark_price, size, sl, tp)
+        equity_now = get_equity_and_position(paper, mark_price)[0]
+        notify_trade("开多", mark_price, size, sl, tp, current_equity=equity_now, initial_equity=INITIAL_EQUITY)
         logger.info("开多 size=%.4f sl=%s tp=%s", size, sl, tp)
     elif direction == -1:
         open_short(mark_price, size, sl, tp, paper)
-        notify_trade("开空", mark_price, size, sl, tp)
+        equity_now = get_equity_and_position(paper, mark_price)[0]
+        notify_trade("开空", mark_price, size, sl, tp, current_equity=equity_now, initial_equity=INITIAL_EQUITY)
         logger.info("开空 size=%.4f sl=%s tp=%s", size, sl, tp)
+    elif paper:
+        save_equity_redis(equity, INITIAL_EQUITY)
 
 
 def main() -> None:

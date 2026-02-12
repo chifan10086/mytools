@@ -61,7 +61,7 @@ poloniex_futures_bot/
   - `SIMULATE_ONLY`：`True` 时仅用公开 K 线、自动多空、全仓 `LEVERAGE` 倍（默认 30）
   - `LEVERAGE`：全仓杠杆倍数
   - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`：决策后发到 Telegram，在 config 中填写
-  - `REDIS_URL`：在 config 中填写，如 `redis://127.0.0.1:6379/0`，记录到 `poloniex_simulate:trades` 与 `poloniex_simulate:last_trade`
+  - `REDIS_URL`：在 config 中填写，如 `redis://127.0.0.1:6379/0`，记录到 `poloniex_simulate:trades`、`poloniex_simulate:last_trade`；**当前权益/累计收益** 写入 `poloniex_simulate:equity`（开平仓 Telegram 通知里也会带「当前权益」「累计收益」）
 
 ## 运行
 
