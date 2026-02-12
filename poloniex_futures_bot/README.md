@@ -10,6 +10,7 @@ Python 实现的 Poloniex BTC 永续合约自动交易机器人：单向持仓�
 - **仓位与权益**：读取当前持仓与账户权益
 - **Paper 模式**：模拟盘，不真实下单
 - **策略（可配置）**：`config.STRATEGY` 选择
+  - **hf**：高频，EMA 5/20 金叉死叉、无 ATR 过滤，配 1 分钟 K 线，信号多、不蹲守
   - **ema_cross**：EMA 快/慢线金叉死叉 + ATR 过滤（原逻辑）
   - **macd**：MACD 线与信号线交叉，可选 ATR 过滤弱信号
   - **rsi**：RSI 超卖做多、超买做空（阈值可配）
@@ -25,7 +26,7 @@ poloniex_futures_bot/
 ├── Dockerfile       # Docker 镜像
 ├── docker-compose.yml  # Bot + Redis 编排
 ├── DOCKER.md        # Docker 运行详细步骤
-├── config.py        # API、策略与风控参数
+├── config.example.py  # 配置模板（复制为 config.py 后填写，config.py 不提交 GitHub）
 ├── rest_client.py   # REST 鉴权、签名、限频重试
 ├── strategy.py      # 多策略：EMA/MACD/RSI/组合，止损止盈
 ├── risk_manager.py  # 连续亏损、当日亏损停机
@@ -39,12 +40,13 @@ poloniex_futures_bot/
 
 ## 配置
 
-在 `config.py` 中填写：
+**首次使用**：`cp config.example.py config.py`，再在 `config.py` 中填写。`config.py` 已加入 .gitignore，不会推送到 GitHub。
 
 - `API_KEY` / `API_SECRET`：Poloniex 后台创建，需开通期货交易权限
 - `SYMBOL`：默认 `BTC_USDT_PERP`
 - `KLINE_INTERVAL`：K 线周期，如 `MINUTE_15`、`HOUR_1`
-- **策略**：`STRATEGY` = `ema_cross` | `macd` | `rsi` | `composite`
+- **策略**：`STRATEGY` = `hf` | `ema_cross` | `macd` | `rsi` | `composite`
+  - 高频 hf：`EMA_HF_FAST`(5) / `EMA_HF_SLOW`(20)，建议 `KLINE_INTERVAL=MINUTE_1`、`MAX_HOLD_CYCLES=2`
   - EMA：`EMA_FAST` / `EMA_SLOW`、`ATR_PERIOD` / `ATR_FILTER_MULT`
   - MACD：`MACD_FAST`(12) / `MACD_SLOW`(26) / `MACD_SIGNAL`(9)、`MACD_ATR_FILTER`
   - RSI：`RSI_PERIOD`(14)、`RSI_OVERSOLD`(30)、`RSI_OVERBOUGHT`(70)
@@ -55,6 +57,7 @@ poloniex_futures_bot/
 - `DAILY_LOSS_RATIO`：当日亏损占权益比例上限（默认 0.05）
 - `PAPER_MODE`：`True` 为模拟，`False` 为实盘
 - **模拟交易**（可不填 API Key）；key、token 等**直接写在 config.py**，不用环境变量：
+  - `INITIAL_EQUITY`：模拟初始本金（默认 10000），重启即按此重新开始
   - `SIMULATE_ONLY`：`True` 时仅用公开 K 线、自动多空、全仓 `LEVERAGE` 倍（默认 30）
   - `LEVERAGE`：全仓杠杆倍数
   - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`：决策后发到 Telegram，在 config 中填写
@@ -70,7 +73,7 @@ python3 main.py
 
 **Docker 运行（Bot + Redis）：** 见 [DOCKER.md](DOCKER.md)，含 Dockerfile、docker-compose 与详细步骤。
 
-- 默认 **Paper 模式**，初始权益 10000，不发起真实订单。
+- 默认 **Paper 模式**，初始本金在 `config.INITIAL_EQUITY`（默认 10000），不发起真实订单。**更新代码后无需清 Redis**；重启进程即按新本金重新开始模拟（权益仅内存，不持久化）。
 - 实盘前请先在 Poloniex 确认合约规格（如张数、面值），必要时在 `exchange.py` 中调整 `CONTRACT_SIZE` 及权益/持仓解析逻辑。
 
 ## 依赖

@@ -57,7 +57,7 @@ Compose 会同时启动 Redis 与机器人；**代码通过挂载当前目录到
    cd /path/to/poloniex_futures_bot
    ```
 
-2. **在 config.py 中填写配置**  
+2. **配置**：若没有 `config.py`，先执行 `cp config.example.py config.py`。在 `config.py` 中填写：  
    - **API_KEY / API_SECRET**：实盘时填写，模拟可留空。  
    - **TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID**：需要通知时填写，不填则不发。  
    - **REDIS_URL**：使用 Compose 时请改为 **`redis://redis:6379/0`**（容器内 Redis 服务名为 `redis`）；本机直接运行时用 `redis://127.0.0.1:6379/0`。  

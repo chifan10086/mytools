@@ -9,6 +9,8 @@ from config import (
     STRATEGY,
     EMA_FAST,
     EMA_SLOW,
+    EMA_HF_FAST,
+    EMA_HF_SLOW,
     ATR_PERIOD,
     ATR_FILTER_MULT,
     STOP_LOSS_RATIO,
@@ -193,6 +195,28 @@ def _compute_rsi(closes: List[float]) -> Tuple[int, Optional[float], Optional[fl
     return 0, None, None
 
 
+# ---------- 高频：快均线 5/20，不做 ATR 过滤，信号多、不蹲守 ----------
+def _compute_hf(
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+) -> Tuple[int, Optional[float], Optional[float]]:
+    n = len(closes)
+    if n < EMA_HF_SLOW + 1:
+        return 0, None, None
+    ema_f = _ema(closes, EMA_HF_FAST)
+    ema_s = _ema(closes, EMA_HF_SLOW)
+    i = n - 1
+    price = closes[i]
+    if ema_f[i] > ema_s[i] and (i == 0 or ema_f[i - 1] <= ema_s[i - 1]):
+        sl, tp = _sl_tp_long(price)
+        return 1, sl, tp
+    if ema_f[i] < ema_s[i] and (i == 0 or ema_f[i - 1] >= ema_s[i - 1]):
+        sl, tp = _sl_tp_short(price)
+        return -1, sl, tp
+    return 0, None, None
+
+
 # ---------- 组合：EMA 趋势 + RSI 过滤（避免超买追多、超卖追空）----------
 def _compute_composite(
     highs: List[float],
@@ -225,9 +249,11 @@ def compute_signal(
     """
     返回 (direction, stop_loss_price, take_profit_price)。
     direction: 1=多, -1=空, 0=无。
-    由 config.STRATEGY 选择：ema_cross | macd | rsi | composite。
+    由 config.STRATEGY 选择：hf | ema_cross | macd | rsi | composite。
     """
     s = (STRATEGY or "ema_cross").strip().lower()
+    if s == "hf":
+        return _compute_hf(highs, lows, closes)
     if s == "macd":
         return _compute_macd(highs, lows, closes)
     if s == "rsi":

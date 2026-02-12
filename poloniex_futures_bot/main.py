@@ -7,7 +7,7 @@ import time
 import logging
 from typing import Optional
 
-from config import SYMBOL, PAPER_MODE, SIMULATE_ONLY, LEVERAGE
+from config import SYMBOL, PAPER_MODE, SIMULATE_ONLY, LEVERAGE, MAX_HOLD_CYCLES, INITIAL_EQUITY
 from strategy import parse_klines, compute_signal, check_stop_loss_take_profit
 from risk_manager import RiskManager
 from paper_engine import PaperEngine
@@ -25,8 +25,12 @@ from notify import notify_trade, notify_close
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+# 持仓后经过的轮询周期数，用于 MAX_HOLD_CYCLES 到时强制平仓
+_cycles_with_position = 0
+
 
 def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
+    global _cycles_with_position
     # 1. K 线
     data = fetch_klines()
     if not data:
@@ -55,9 +59,22 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
         if sl_tp:
             pnl = close_position(pos_side, pos_size, mark_price, paper)
             risk.record_trade(pnl, equity)
+            _cycles_with_position = 0
             notify_close(pos_side, mark_price, pnl, sl_tp)
             logger.info("平仓 %s @ %s, 盈亏=%.2f", sl_tp, mark_price, pnl)
             return
+        # 最大持仓周期：到点强制平仓，便于频繁重新开仓
+        if MAX_HOLD_CYCLES > 0:
+            _cycles_with_position += 1
+            if _cycles_with_position >= MAX_HOLD_CYCLES:
+                pnl = close_position(pos_side, pos_size, mark_price, paper)
+                risk.record_trade(pnl, equity)
+                _cycles_with_position = 0
+                notify_close(pos_side, mark_price, pnl, "最大持仓周期")
+                logger.info("平仓 最大持仓周期 @ %s, 盈亏=%.2f", mark_price, pnl)
+                return
+    else:
+        _cycles_with_position = 0
 
     # 5. 信号
     direction, sl, tp = compute_signal(o, h, l, c)
@@ -73,6 +90,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
     if pos_side == "LONG" and direction == -1:
         pnl = close_position("LONG", pos_size, mark_price, paper)
         risk.record_trade(pnl, equity)
+        _cycles_with_position = 0
         logger.info("平多 @ %s, 盈亏=%.2f，准备开空", mark_price, pnl)
         notify_close("LONG", mark_price, pnl, "反向开空")
         open_short(mark_price, size, sl, tp, paper)
@@ -82,6 +100,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
     if pos_side == "SHORT" and direction == 1:
         pnl = close_position("SHORT", pos_size, mark_price, paper)
         risk.record_trade(pnl, equity)
+        _cycles_with_position = 0
         logger.info("平空 @ %s, 盈亏=%.2f，准备开多", mark_price, pnl)
         notify_close("SHORT", mark_price, pnl, "反向开多")
         open_long(mark_price, size, sl, tp, paper)
@@ -103,13 +122,13 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
 
 
 def main() -> None:
-    paper = PaperEngine(initial_equity=10000.0) if (PAPER_MODE or SIMULATE_ONLY) else None
+    paper = PaperEngine(initial_equity=INITIAL_EQUITY) if (PAPER_MODE or SIMULATE_ONLY) else None
     risk = RiskManager()
 
     if SIMULATE_ONLY:
         logger.info("模拟交易模式：不配置 Key，自动多空决策，全仓 %s 倍，Telegram + Redis", LEVERAGE)
     if PAPER_MODE or SIMULATE_ONLY:
-        logger.info("Paper 权益 10000")
+        logger.info("Paper 初始本金 %.2f", INITIAL_EQUITY)
 
     interval_sec = 60  # 每分钟轮询一次
     while True:

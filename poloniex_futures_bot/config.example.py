@@ -1,5 +1,6 @@
-# Poloniex BTC 永续合约机器人配置
-# 所有 key、token 等直接在本文件中填写，勿用环境变量传递敏感信息
+# Poloniex BTC 永续合约机器人配置模板
+# 使用：复制为 config.py 后填写，config.py 已加入 .gitignore 不会推送到 GitHub
+# cp config.example.py config.py
 
 # API（在 Poloniex 后台创建，需开通期货交易权限）
 API_KEY = ""
@@ -7,11 +8,16 @@ API_SECRET = ""
 
 # 交易对与周期
 SYMBOL = "BTC_USDT_PERP"
-KLINE_INTERVAL = "MINUTE_15"   # MINUTE_1, MINUTE_5, MINUTE_15, HOUR_1, HOUR_4, DAY_1
+# 高频用 MINUTE_1，普通用 MINUTE_15
+KLINE_INTERVAL = "MINUTE_1"
 KLINE_LIMIT = 100
 
-# 策略选择：ema_cross | macd | rsi | composite
-STRATEGY = "ema_cross"
+# 策略选择：hf=高频(快均线无过滤) | ema_cross | macd | rsi | composite
+STRATEGY = "hf"
+
+# 高频策略（hf）：快均线、无 ATR 过滤，信号多
+EMA_HF_FAST = 5
+EMA_HF_SLOW = 20
 
 # EMA 交叉策略（ema_cross / composite 趋势）
 EMA_FAST = 20
@@ -32,9 +38,11 @@ RSI_OVERBOUGHT = 70     # 高于此做空
 RSI_NEUTRAL_LOW = 40    # composite 做多时要求 RSI < 此
 RSI_NEUTRAL_HIGH = 60   # composite 做空时要求 RSI > 此
 
-# 止损止盈（相对开仓价的倍数，如 0.02 = 2%）
-STOP_LOSS_RATIO = 0.02
-TAKE_PROFIT_RATIO = 0.03
+# 止损止盈：按「标的价格」涨跌比例。30 倍杠杆下 本金盈亏 ≈ 价格变动% × 30
+STOP_LOSS_RATIO = 0.004   # 约本金 12% 止损（30x）
+TAKE_PROFIT_RATIO = 0.004 # 约本金 12% 止盈（30x）
+# 最大持仓周期数：每 60 秒一轮；高频建议 2（约 2 分钟），0=不限制
+MAX_HOLD_CYCLES = 2
 
 # 仓位与风控
 POSITION_EQUITY_RATIO = 0.10   # 仓位 = 权益的 10%
@@ -43,16 +51,16 @@ DAILY_LOSS_RATIO = 0.05        # 当日亏损达权益 5% 停机
 
 # 运行模式
 PAPER_MODE = True   # True=模拟，False=实盘
-# 模拟交易：不配置 API Key，仅用公开 K 线 + 自动决策，发 Telegram + 写 Redis
 SIMULATE_ONLY = True
-# 全仓杠杆倍数（模拟/实盘下单时的名义仓位 = 权益 * LEVERAGE）
+# 模拟初始本金（重启进程即按此重新开始）
+INITIAL_EQUITY = 10000.0
 LEVERAGE = 30
 
-# Telegram 通知（决策后发到群组，直接填写）
+# Telegram 通知（直接填写，不填则不发）
 TELEGRAM_BOT_TOKEN = ""
-TELEGRAM_CHAT_ID = None  # 如 -1001234567890，不填则不发
+TELEGRAM_CHAT_ID = None  # 如 -1001234567890
 
-# Redis 记录交易（直接填写；Docker Compose 时改为 redis://redis:6379/0）
+# Redis（Docker Compose 时改为 redis://redis:6379/0）
 REDIS_URL = "redis://127.0.0.1:6379/0"
 
 # 请求
