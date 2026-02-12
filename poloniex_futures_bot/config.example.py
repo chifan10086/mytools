@@ -41,12 +41,12 @@ RSI_NEUTRAL_HIGH = 60   # composite 做空时要求 RSI > 此
 # 止损止盈：按「标的价格」涨跌比例。30 倍杠杆下 本金盈亏 ≈ 价格变动% × 30
 STOP_LOSS_RATIO = 0.004   # 约本金 12% 止损（30x）
 TAKE_PROFIT_RATIO = 0.004 # 约本金 12% 止盈（30x）
-# 最大持仓周期数：每 60 秒一轮；高频建议 2（约 2 分钟），0=不限制
-MAX_HOLD_CYCLES = 2
+# 最大持仓周期数：每 60 秒一轮；0=不限制持仓时间
+MAX_HOLD_CYCLES = 0
 
 # 仓位与风控
 POSITION_EQUITY_RATIO = 0.10   # 仓位 = 权益的 10%
-MAX_CONSECUTIVE_LOSSES = 3     # 连续亏损 3 次停机
+MAX_CONSECUTIVE_LOSSES = 5     # 连续亏损 5 次停机
 DAILY_LOSS_RATIO = 0.05        # 当日亏损达权益 5% 停机
 
 # 运行模式

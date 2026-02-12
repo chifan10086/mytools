@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-风控：连续亏损 3 次停机；每日亏损 5% 停机。
+风控：连续亏损 N 次停机（config.MAX_CONSECUTIVE_LOSSES）；每日亏损 5% 停机。
 """
 import time
 from typing import Optional, Tuple
