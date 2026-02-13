@@ -24,6 +24,13 @@ from config import (
     RSI_OVERBOUGHT,
     RSI_NEUTRAL_LOW,
     RSI_NEUTRAL_HIGH,
+    CONSENSUS_EXCHANGES,
+    CONSENSUS_A,
+    CONSENSUS_B,
+    CONSENSUS_C,
+    CONSENSUS_THRESHOLD_LONG,
+    CONSENSUS_THRESHOLD_SHORT,
+    CONSENSUS_MOMENTUM_MINUTES,
 )
 
 
@@ -217,6 +224,32 @@ def _compute_hf(
     return 0, None, None
 
 
+# ---------- 多交易所共识：global_pressure = Σ(volume_weight × pressure)，pressure = a*momentum + b*OI_change - c*funding ----------
+def _compute_consensus(
+    opens: List[float],
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+) -> Tuple[int, Optional[float], Optional[float]]:
+    from multi_exchange import fetch_exchanges, volume_weights, global_pressure
+
+    records = fetch_exchanges(CONSENSUS_EXCHANGES, CONSENSUS_MOMENTUM_MINUTES)
+    if len(records) < 2:
+        return 0, None, None
+    weights = volume_weights(records)
+    gp = global_pressure(records, weights, CONSENSUS_A, CONSENSUS_B, CONSENSUS_C, oi_change_list=None)
+    price = closes[-1] if closes else (records[0].get("price") or 0)
+    if price <= 0:
+        return 0, None, None
+    if gp >= CONSENSUS_THRESHOLD_LONG:
+        sl, tp = _sl_tp_long(price)
+        return 1, sl, tp
+    if gp <= CONSENSUS_THRESHOLD_SHORT:
+        sl, tp = _sl_tp_short(price)
+        return -1, sl, tp
+    return 0, None, None
+
+
 # ---------- 组合：EMA 趋势 + RSI 过滤（避免超买追多、超卖追空）----------
 def _compute_composite(
     highs: List[float],
@@ -249,11 +282,13 @@ def compute_signal(
     """
     返回 (direction, stop_loss_price, take_profit_price)。
     direction: 1=多, -1=空, 0=无。
-    由 config.STRATEGY 选择：hf | ema_cross | macd | rsi | composite。
+    由 config.STRATEGY 选择：hf | ema_cross | macd | rsi | composite | consensus。
     """
     s = (STRATEGY or "ema_cross").strip().lower()
     if s == "hf":
         return _compute_hf(highs, lows, closes)
+    if s == "consensus":
+        return _compute_consensus(opens, highs, lows, closes)
     if s == "macd":
         return _compute_macd(highs, lows, closes)
     if s == "rsi":

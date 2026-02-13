@@ -12,7 +12,7 @@ SYMBOL = "BTC_USDT_PERP"
 KLINE_INTERVAL = "MINUTE_1"
 KLINE_LIMIT = 100
 
-# 策略选择：hf=高频(快均线无过滤) | ema_cross | macd | rsi | composite
+# 策略选择：hf | ema_cross | macd | rsi | composite | consensus（多交易所压力共识）
 STRATEGY = "hf"
 
 # 高频策略（hf）：快均线、无 ATR 过滤，信号多
@@ -38,9 +38,20 @@ RSI_OVERBOUGHT = 70     # 高于此做空
 RSI_NEUTRAL_LOW = 40    # composite 做多时要求 RSI < 此
 RSI_NEUTRAL_HIGH = 60   # composite 做空时要求 RSI > 此
 
+# 多交易所共识策略（consensus）：pressure = a*momentum + b*OI_change - c*funding_rate
+# 成交额仅作权重；global_pressure = Σ(volume_weight_i × pressure_i)
+CONSENSUS_EXCHANGES = ["binance", "bybit", "okx", "bitget"]  # 已实现公开 API 的 4 家，可删减
+CONSENSUS_A = 1.0       # 短周期价格动量系数（如 5m 涨跌幅）
+CONSENSUS_B = 0.5       # 未平仓量变化系数（无 OI 时为 0）
+CONSENSUS_C = 100.0     # 资金费率系数（越高越偏空，取负）
+CONSENSUS_THRESHOLD_LONG = 0.3   # 超过此开多
+CONSENSUS_THRESHOLD_SHORT = -0.3 # 低于此开空
+CONSENSUS_MOMENTUM_MINUTES = 5   # 动量周期（分钟）
+
 # 止损止盈：按「标的价格」涨跌比例。30 倍杠杆下 本金盈亏 ≈ 价格变动% × 30
 STOP_LOSS_RATIO = 0.004   # 约本金 12% 止损（30x）
 TAKE_PROFIT_RATIO = 0.004 # 约本金 12% 止盈（30x）
+# 本金 10% 止盈 → 价格动 10%/30≈0.333% → 取 0.00333；同理本金 10% 止损
 # 最大持仓周期数：每 60 秒一轮；0=不限制持仓时间
 MAX_HOLD_CYCLES = 0
 

@@ -15,6 +15,7 @@ Python 实现的 Poloniex BTC 永续合约自动交易机器人：单向持仓�
   - **macd**：MACD 线与信号线交叉，可选 ATR 过滤弱信号
   - **rsi**：RSI 超卖做多、超买做空（阈值可配）
   - **composite**：EMA 趋势 + RSI 过滤（避免超买追多、超卖追空）
+  - **consensus**：多交易所 BTC 永续共识，按 24h 成交额加权，pressure = a×动量 + b×OI 变化 - c×资金费率，超阈值开多/开空
 - **仓位**：权益的 10%（可配）
 - **风控**：连续亏损 3 次停机；当日亏损达权益 5% 停机
 - **模拟交易模式**（`SIMULATE_ONLY=True`）：不配置 API Key，仅用公开 K 线自动多空决策；全仓 30 倍；每次决策后发 Telegram、写 Redis 记录交易价格
@@ -45,8 +46,9 @@ poloniex_futures_bot/
 - `API_KEY` / `API_SECRET`：Poloniex 后台创建，需开通期货交易权限
 - `SYMBOL`：默认 `BTC_USDT_PERP`
 - `KLINE_INTERVAL`：K 线周期，如 `MINUTE_15`、`HOUR_1`
-- **策略**：`STRATEGY` = `hf` | `ema_cross` | `macd` | `rsi` | `composite`
+- **策略**：`STRATEGY` = `hf` | `ema_cross` | `macd` | `rsi` | `composite` | `consensus`
   - 高频 hf：`EMA_HF_FAST`(5) / `EMA_HF_SLOW`(20)，建议 `KLINE_INTERVAL=MINUTE_1`；`MAX_HOLD_CYCLES=0` 不限制持仓时间
+  - 共识 consensus：`CONSENSUS_EXCHANGES`、`CONSENSUS_A/B/C`、`CONSENSUS_THRESHOLD_LONG/SHORT`、`CONSENSUS_MOMENTUM_MINUTES`
   - EMA：`EMA_FAST` / `EMA_SLOW`、`ATR_PERIOD` / `ATR_FILTER_MULT`
   - MACD：`MACD_FAST`(12) / `MACD_SLOW`(26) / `MACD_SIGNAL`(9)、`MACD_ATR_FILTER`
   - RSI：`RSI_PERIOD`(14)、`RSI_OVERSOLD`(30)、`RSI_OVERBOUGHT`(70)
