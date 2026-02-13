@@ -16,7 +16,7 @@ Python 实现的 Poloniex BTC 永续合约自动交易机器人：单向持仓�
   - **rsi**：RSI 超卖做多、超买做空（阈值可配）
   - **composite**：EMA 趋势 + RSI 过滤（避免超买追多、超卖追空）
 - **仓位**：权益的 10%（可配）
-- **风控**：连续亏损 5 次停机；当日亏损达权益 5% 停机
+- **风控**：连续亏损 3 次停机；当日亏损达权益 5% 停机
 - **模拟交易模式**（`SIMULATE_ONLY=True`）：不配置 API Key，仅用公开 K 线自动多空决策；全仓 30 倍；每次决策后发 Telegram、写 Redis 记录交易价格
 
 ## 目录结构
@@ -53,7 +53,7 @@ poloniex_futures_bot/
   - 组合：`RSI_NEUTRAL_LOW`(40)、`RSI_NEUTRAL_HIGH`(60) 用于过滤
 - `STOP_LOSS_RATIO` / `TAKE_PROFIT_RATIO`：止损/止盈比例（如 0.02 / 0.03）
 - `POSITION_EQUITY_RATIO`：仓位占权益比例（默认 0.1）
-- `MAX_CONSECUTIVE_LOSSES`：连续亏损次数上限（默认 5）
+- `MAX_CONSECUTIVE_LOSSES`：连续亏损次数上限（默认 3）
 - `DAILY_LOSS_RATIO`：当日亏损占权益比例上限（默认 0.05）
 - `PAPER_MODE`：`True` 为模拟，`False` 为实盘
 - **模拟交易**（可不填 API Key）；key、token 等**直接写在 config.py**，不用环境变量：

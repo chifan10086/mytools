@@ -46,7 +46,7 @@ MAX_HOLD_CYCLES = 0
 
 # 仓位与风控
 POSITION_EQUITY_RATIO = 0.10   # 仓位 = 权益的 10%
-MAX_CONSECUTIVE_LOSSES = 5     # 连续亏损 5 次停机
+MAX_CONSECUTIVE_LOSSES = 3     # 连续亏损 3 次停机
 DAILY_LOSS_RATIO = 0.05        # 当日亏损达权益 5% 停机
 
 # 运行模式
