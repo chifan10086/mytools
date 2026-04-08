@@ -70,7 +70,31 @@ def save_equity_redis(equity: float, initial_equity: float) -> bool:
         return False
 
 
-def notify_trade(side: str, price: float, size: float, sl: Optional[float], tp: Optional[float], reason: str = "", current_equity: Optional[float] = None, initial_equity: Optional[float] = None) -> None:
+def send_telegram_long(text: str, chunk: int = 3900) -> None:
+    """Telegram 单条上限约 4096，超长时分段发送。"""
+    if not text:
+        return
+    t = text.strip()
+    if len(t) <= chunk:
+        send_telegram(t)
+        return
+    n = (len(t) + chunk - 1) // chunk
+    for i in range(n):
+        part = t[i * chunk : (i + 1) * chunk]
+        send_telegram(f"（{i + 1}/{n}）\n{part}")
+
+
+def notify_trade(
+    side: str,
+    price: float,
+    size: float,
+    sl: Optional[float],
+    tp: Optional[float],
+    reason: str = "",
+    current_equity: Optional[float] = None,
+    initial_equity: Optional[float] = None,
+    decision_reason: str = "",
+) -> None:
     """决策后：发 Telegram + 写 Redis，记录交易价格。"""
     from config import SYMBOL, LEVERAGE, INITIAL_EQUITY
 
@@ -85,7 +109,9 @@ def notify_trade(side: str, price: float, size: float, sl: Optional[float], tp: 
         text += f"\n当前权益: {current_equity:.2f} | 累计收益: {pnl:+.2f}"
     if reason:
         text += f"\n{reason}"
-    send_telegram(text)
+    if decision_reason:
+        text += f"\n---决策依据---\n{decision_reason}"
+    send_telegram_long(text)
 
     trade = {
         "side": side,
@@ -98,6 +124,8 @@ def notify_trade(side: str, price: float, size: float, sl: Optional[float], tp: 
     }
     if current_equity is not None:
         trade["equity"] = current_equity
+    if decision_reason:
+        trade["decision_reason"] = decision_reason
     save_trade_redis(trade)
     if current_equity is not None:
         save_equity_redis(current_equity, initial_equity or INITIAL_EQUITY)
@@ -127,25 +155,45 @@ def notify_close(side: str, price: float, pnl: float, reason: str = "", current_
         save_equity_redis(current_equity, initial_equity or INITIAL_EQUITY)
 
 
-def notify_position_report(
-    pos_side: str,
-    entry_price: float,
-    mark_price: float,
-    pos_size: float,
+def notify_hourly_pnl_report(
+    *,
     equity: float,
     initial_equity: float,
+    equity_at_hour_start: float,
+    mark_price: float,
+    pos_side: Optional[str],
+    entry_price: float,
+    pos_size: float,
+    total_fees_paid: float,
+    total_funding_cashflow: float,
+    funding_rate_used: float,
+    taker_fee_rate: float,
+    last_decision_rationale: str,
+    symbol: str,
 ) -> None:
-    """每 10 分钟汇报持仓盈亏（仅在有持仓时调用）。"""
-    if pos_side.upper() == "LONG":
-        unrealized = (mark_price - entry_price) * pos_size
-    else:
-        unrealized = (entry_price - mark_price) * pos_size
-    total_pnl = equity - initial_equity
-    side_cn = "多" if pos_side.upper() == "LONG" else "空"
-    text = (
-        f"【持仓汇报】{side_cn}\n"
-        f"开仓价: {entry_price:.2f} | 现价: {mark_price:.2f}\n"
-        f"持仓盈亏: {unrealized:+.2f}\n"
-        f"当前权益: {equity:.2f} | 累计收益: {total_pnl:+.2f}"
+    """
+    每小时汇总：权益变化（已含模拟盘手续费与资金费线性摊销）、累计盈亏、决策依据。
+    """
+    hour_pnl = equity - equity_at_hour_start
+    cum_pnl = equity - initial_equity
+    unreal_txt = ""
+    if pos_side and pos_size > 0:
+        if pos_side.upper() == "LONG":
+            u = (mark_price - entry_price) * pos_size
+        else:
+            u = (entry_price - mark_price) * pos_size
+        side_cn = "多" if pos_side.upper() == "LONG" else "空"
+        unreal_txt = f"\n持仓: {side_cn} | 开仓 {entry_price:.2f} | 标记 {mark_price:.2f}\n未实现价差盈亏(未扣平仓费): {u:+.2f}"
+    head = (
+        f"【小时汇总】{symbol}\n"
+        f"当前权益: {equity:.2f}（初始 {initial_equity:.2f}）\n"
+        f"本小时权益变动: {hour_pnl:+.2f}（已计入本段资金费摊销与历史成交手续费）\n"
+        f"累计净变动: {cum_pnl:+.2f}\n"
+        f"累计手续费(模拟): {total_fees_paid:.4f}\n"
+        f"累计资金费收支(模拟): {total_funding_cashflow:+.4f}\n"
+        f"本次使用资金费率 fR: {funding_rate_used:.6f} | Taker 费率: {taker_fee_rate:.5f}"
+        f"{unreal_txt}"
     )
-    send_telegram(text)
+    send_telegram_long(head)
+    if last_decision_rationale:
+        send_telegram_long("【最近一轮决策依据】\n" + last_decision_rationale)

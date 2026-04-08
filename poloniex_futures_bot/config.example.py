@@ -12,8 +12,30 @@ SYMBOL = "BTC_USDT_PERP"
 KLINE_INTERVAL = "MINUTE_1"
 KLINE_LIMIT = 100
 
-# 策略选择：hf | ema_cross | macd | rsi | composite | consensus（多交易所压力共识）
+# 策略选择：hf | ema_cross | macd | rsi | composite | consensus | freqtrade（technical/qtpylib）
 STRATEGY = "hf"
+# True：主策略须与 freqtrade 风格同向才开仓
+FREQTRADE_CONFIRM = False
+
+# Freqtrade 风格参数（freqtrade_advisory）
+FT_EMA_SHORT = 12
+FT_EMA_LONG = 26
+FT_MACD_FAST = 12
+FT_MACD_SLOW = 26
+FT_MACD_SIGNAL = 9
+FT_USE_MACD_FILTER = True
+FT_RSI_PERIOD = 14
+FT_RSI_LONG_MAX = 72
+FT_RSI_SHORT_MIN = 28
+
+# 模拟：Taker 手续费（与账户实际费率一致）；资金费来自 API fR 或兜底
+FUTURES_TAKER_FEE_RATE = 0.0005
+FUNDING_SETTLEMENT_SECONDS = 28800
+USE_API_FUNDING_RATE = True
+FUNDING_RATE_FALLBACK = 0.0
+
+# 每小时 Telegram 汇总（秒）
+HOURLY_REPORT_INTERVAL_SEC = 3600
 
 # 高频策略（hf）：快均线、无 ATR 过滤，信号多
 EMA_HF_FAST = 5

@@ -107,6 +107,23 @@ def _request(
     return {}
 
 
+def get_market_funding_rate(symbol: str) -> Optional[Dict[str, Any]]:
+    """
+    当前资金费率（公开接口）。正费率通常表示多方向空方支付。
+    返回 data 字典（含 fR 等）或 None。
+    """
+    try:
+        r = _request("GET", "/v3/market/fundingRate", params={"symbol": symbol}, signed=False)
+        data = r.get("data")
+        if isinstance(data, dict) and data:
+            return data
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return data[0]
+    except Exception:
+        pass
+    return None
+
+
 def get_klines(symbol: str, interval: str, limit: int = 100, s_time: Optional[int] = None, e_time: Optional[int] = None) -> List[List]:
     """获取 K 线。返回 list of [l, h, o, c, amt, qty, tC, sT, cT]。"""
     params = {"symbol": symbol, "interval": interval, "limit": limit}

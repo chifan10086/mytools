@@ -42,6 +42,8 @@ wheels/
 # 敏感配置与数据（勿提交）
 bot/config.py
 bot/x.txt
+tencentbot/config.txt
+tencentbot/config.py
 
 # 操作系统
 .DS_Store

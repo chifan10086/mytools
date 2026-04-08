@@ -1,5 +1,5 @@
 # Poloniex BTC 永续合约机器人 - 仅装依赖，代码由 docker-compose 挂载
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
