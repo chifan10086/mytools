@@ -5,6 +5,8 @@
 """
 from typing import List, Tuple, Optional
 
+import config_bootstrap  # noqa: F401
+
 import pandas as pd
 
 try:

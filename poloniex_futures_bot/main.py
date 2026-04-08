@@ -7,6 +7,8 @@ import time
 import logging
 from typing import Optional
 
+import config_bootstrap  # noqa: F401  # 旧版 config.py 缺省字段时补齐
+
 from config import (
     SYMBOL,
     PAPER_MODE,
