@@ -65,6 +65,11 @@ def fetch_klines() -> List[List]:
     return get_klines(SYMBOL, KLINE_INTERVAL, limit=KLINE_LIMIT)
 
 
+def fetch_klines_mtf(interval: str, limit: int) -> List[List]:
+    """获取指定周期的 K 线，供多时间框架策略使用。"""
+    return get_klines(SYMBOL, interval, limit=limit)
+
+
 def open_long(mark_price: float, size: float, sl: Optional[float], tp: Optional[float], paper: Optional[PaperEngine]) -> None:
     if (PAPER_MODE or SIMULATE_ONLY) and paper is not None:
         paper.open_long(mark_price, size, sl, tp)

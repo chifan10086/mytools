@@ -12,8 +12,8 @@ SYMBOL = "BTC_USDT_PERP"
 KLINE_INTERVAL = "MINUTE_1"
 KLINE_LIMIT = 100
 
-# 策略选择：hf | ema_cross | macd | rsi | composite | consensus | freqtrade（technical/qtpylib）
-STRATEGY = "hf"
+# 策略选择：auto | hf | ema_cross | macd | rsi | composite | consensus | mtf | freqtrade（technical/qtpylib）
+STRATEGY = "auto"
 # True：主策略须与 freqtrade 风格同向才开仓
 FREQTRADE_CONFIRM = False
 
@@ -69,6 +69,39 @@ CONSENSUS_C = 100.0     # 资金费率系数（越高越偏空，取负）
 CONSENSUS_THRESHOLD_LONG = 0.3   # 超过此开多
 CONSENSUS_THRESHOLD_SHORT = -0.3 # 低于此开空
 CONSENSUS_MOMENTUM_MINUTES = 5   # 动量周期（分钟）
+
+# 多时间框架策略（mtf）：高周期定趋势 + 低周期找入场 + 成交量/RSI 过滤
+MTF_HTF_INTERVAL = "MINUTE_15"     # 高周期 K 线周期（趋势判定）
+MTF_HTF_LIMIT = 200                # 高周期 K 线拉取数量（需覆盖 EMA200）
+MTF_LTF_INTERVAL = "MINUTE_1"     # 低周期 K 线周期（入场时机）
+MTF_LTF_LIMIT = 100               # 低周期 K 线拉取数量
+MTF_HTF_EMA_FAST = 50             # 高周期快均线（趋势方向）
+MTF_HTF_EMA_SLOW = 200            # 高周期慢均线（长期趋势）
+MTF_LTF_EMA_FAST = 9              # 低周期快均线（入场信号）
+MTF_LTF_EMA_SLOW = 21             # 低周期慢均线（入场信号）
+MTF_RSI_PERIOD = 14               # RSI 周期
+MTF_RSI_LONG_MAX = 70             # 做多时 RSI 不超此值（防追高）
+MTF_RSI_SHORT_MIN = 30            # 做空时 RSI 不低于此值（防杀跌）
+MTF_VOL_MA_PERIOD = 20            # 成交量均线周期
+MTF_VOL_MULT = 1.2                # 信号确认需成交量 > 均量 × 此系数
+MTF_ATR_SL_MULT = 2.0             # 止损 = ATR × 此系数（动态止损）
+MTF_ATR_TP_MULT = 3.0             # 止盈 = ATR × 此系数（动态止盈）
+
+# 自动策略（auto）：实时分析市场状态，自动切换最适合的子策略
+# 市场分类依据 ADX 趋势强度 + ATR 波动率百分位 + RSI 极端值
+AUTO_ADX_PERIOD = 14              # ADX 计算周期
+AUTO_ADX_TREND_THRESHOLD = 25     # ADX > 此值判为趋势市；≤ 此值为震荡市
+AUTO_ADX_STRONG_TREND = 40        # ADX > 此值判为强趋势（用 mtf）
+AUTO_ATR_LOOKBACK = 50            # ATR 波动率百分位回看窗口
+AUTO_ATR_HIGH_PERCENTILE = 75     # ATR 百分位 > 此值判为高波动
+AUTO_RSI_EXTREME_LOW = 20         # RSI < 此值判为极端超卖
+AUTO_RSI_EXTREME_HIGH = 80        # RSI > 此值判为极端超买
+# 市场状态 → 策略映射（可改为任意已有策略名）
+AUTO_STRATEGY_STRONG_TREND = "mtf"        # 强趋势 → 多时间框架
+AUTO_STRATEGY_TREND = "composite"         # 普通趋势 → EMA+RSI 组合
+AUTO_STRATEGY_RANGING = "rsi"             # 震荡 → RSI 抄底摸顶
+AUTO_STRATEGY_HIGH_VOLATILITY = "macd"    # 高波动 → MACD 捕捉动量
+AUTO_STRATEGY_EXTREME = "rsi"             # 极端行情 → RSI 超买超卖反转
 
 # 止损止盈：按「标的价格」涨跌比例。30 倍杠杆下 本金盈亏 ≈ 价格变动% × 30
 STOP_LOSS_RATIO = 0.004   # 约本金 12% 止损（30x）

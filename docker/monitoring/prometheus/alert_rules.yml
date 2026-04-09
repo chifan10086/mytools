@@ -1,0 +1,38 @@
+groups:
+  - name: node_alerts
+    rules:
+      - alert: InstanceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "实例 {{ $labels.instance }} 已宕机"
+          description: "{{ $labels.instance }} (job {{ $labels.job }}) 已经宕机超过 1 分钟。"
+
+      - alert: HighCpuUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "实例 {{ $labels.instance }} CPU 使用率过高"
+          description: "CPU 使用率超过 80%，当前值: {{ $value }}%"
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "实例 {{ $labels.instance }} 内存使用率过高"
+          description: "内存使用率超过 80%，当前值: {{ $value }}%"
+
+      - alert: HighDiskUsage
+        expr: (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "实例 {{ $labels.instance }} 磁盘使用率过高"
+          description: "磁盘 {{ $labels.mountpoint }} 使用率超过 85%，当前值: {{ $value }}%"

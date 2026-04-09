@@ -34,6 +34,33 @@ from config import (
     CONSENSUS_THRESHOLD_LONG,
     CONSENSUS_THRESHOLD_SHORT,
     CONSENSUS_MOMENTUM_MINUTES,
+    MTF_HTF_INTERVAL,
+    MTF_HTF_LIMIT,
+    MTF_LTF_INTERVAL,
+    MTF_LTF_LIMIT,
+    MTF_HTF_EMA_FAST,
+    MTF_HTF_EMA_SLOW,
+    MTF_LTF_EMA_FAST,
+    MTF_LTF_EMA_SLOW,
+    MTF_RSI_PERIOD,
+    MTF_RSI_LONG_MAX,
+    MTF_RSI_SHORT_MIN,
+    MTF_VOL_MA_PERIOD,
+    MTF_VOL_MULT,
+    MTF_ATR_SL_MULT,
+    MTF_ATR_TP_MULT,
+    AUTO_ADX_PERIOD,
+    AUTO_ADX_TREND_THRESHOLD,
+    AUTO_ADX_STRONG_TREND,
+    AUTO_ATR_LOOKBACK,
+    AUTO_ATR_HIGH_PERCENTILE,
+    AUTO_RSI_EXTREME_LOW,
+    AUTO_RSI_EXTREME_HIGH,
+    AUTO_STRATEGY_STRONG_TREND,
+    AUTO_STRATEGY_TREND,
+    AUTO_STRATEGY_RANGING,
+    AUTO_STRATEGY_HIGH_VOLATILITY,
+    AUTO_STRATEGY_EXTREME,
 )
 from freqtrade_advisory import compute_freqtrade_signal
 
@@ -265,6 +292,176 @@ def _compute_consensus(
     return 0, None, None, snap + " → 未过阈值"
 
 
+# ---------- 多时间框架 MTF：高周期趋势 + 低周期入场 + 成交量/RSI/MACD 实时确认 ----------
+def _vol_ma(amounts: List[float], period: int) -> List[float]:
+    """成交量（额）简单移动平均。"""
+    n = len(amounts)
+    out = [0.0] * n
+    for i in range(n):
+        start = max(0, i - period + 1)
+        out[i] = sum(amounts[start : i + 1]) / (i - start + 1)
+    return out
+
+
+def _compute_mtf(
+    opens: List[float],
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+) -> Tuple[int, Optional[float], Optional[float], str]:
+    """
+    多时间框架策略：
+    1) 拉取 15 分钟 K 线 → EMA50/200 定大趋势 + MACD 柱确认动量方向
+    2) 用传入的 1 分钟 K 线 → EMA9/21 找精确入场
+    3) RSI 防追高杀跌；成交量 > 均量倍数确认信号强度
+    4) ATR 动态止损止盈
+    """
+    from exchange import fetch_klines_mtf
+
+    lines: List[str] = ["【MTF 多时间框架】"]
+
+    # ---- 高周期（15 分钟）趋势判定 ----
+    htf_raw = fetch_klines_mtf(MTF_HTF_INTERVAL, MTF_HTF_LIMIT)
+    if not htf_raw:
+        return 0, None, None, "【MTF】高周期 K 线拉取失败"
+    htf_o, htf_h, htf_l, htf_c, _ = parse_klines(htf_raw)
+    htf_n = len(htf_c)
+    need_htf = MTF_HTF_EMA_SLOW + MACD_SLOW + MACD_SIGNAL
+    if htf_n < need_htf:
+        return 0, None, None, f"【MTF】高周期 K 线不足(需≥{need_htf}，当前{htf_n})"
+
+    htf_ema_f = _ema(htf_c, MTF_HTF_EMA_FAST)
+    htf_ema_s = _ema(htf_c, MTF_HTF_EMA_SLOW)
+    htf_macd, htf_signal, htf_hist = _macd(htf_c, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+    htf_rsi = _rsi(htf_c, MTF_RSI_PERIOD)
+
+    hi = htf_n - 1
+    htf_price = htf_c[hi]
+    htf_ef, htf_es = htf_ema_f[hi], htf_ema_s[hi]
+    htf_h_val = htf_hist[hi]
+    htf_rsi_val = htf_rsi[hi]
+
+    htf_trend = 0
+    if htf_ef > htf_es:
+        htf_trend = 1
+    elif htf_ef < htf_es:
+        htf_trend = -1
+
+    htf_macd_confirm = (htf_trend == 1 and htf_h_val > 0) or (htf_trend == -1 and htf_h_val < 0)
+
+    lines.append(
+        f"高周期({MTF_HTF_INTERVAL})：收盘={htf_price:.2f} "
+        f"EMA{MTF_HTF_EMA_FAST}={htf_ef:.2f} EMA{MTF_HTF_EMA_SLOW}={htf_es:.2f} "
+        f"趋势={'多' if htf_trend == 1 else '空' if htf_trend == -1 else '震荡'}"
+    )
+    lines.append(
+        f"  MACD柱={htf_h_val:.4f} {'确认' if htf_macd_confirm else '未确认'}动量 | "
+        f"RSI={htf_rsi_val:.1f}" if htf_rsi_val is not None else f"  MACD柱={htf_h_val:.4f} | RSI=N/A"
+    )
+
+    if htf_trend == 0:
+        lines.append("→ 高周期无明确趋势，不开仓")
+        return 0, None, None, "\n".join(lines)
+
+    if not htf_macd_confirm:
+        lines.append("→ 高周期 MACD 柱未确认趋势动量，不开仓")
+        return 0, None, None, "\n".join(lines)
+
+    # ---- 低周期（1 分钟，使用传入数据）入场信号 ----
+    ltf_n = len(closes)
+    ltf_need = max(MTF_LTF_EMA_SLOW + 1, MTF_RSI_PERIOD + 1, MTF_VOL_MA_PERIOD + 1, ATR_PERIOD + 1)
+    if ltf_n < ltf_need:
+        lines.append(f"低周期 K 线不足(需≥{ltf_need}，当前{ltf_n})")
+        return 0, None, None, "\n".join(lines)
+
+    ltf_ema_f = _ema(closes, MTF_LTF_EMA_FAST)
+    ltf_ema_s = _ema(closes, MTF_LTF_EMA_SLOW)
+    ltf_rsi = _rsi(closes, MTF_RSI_PERIOD)
+    ltf_atr = _atr(highs, lows, closes, ATR_PERIOD)
+
+    li = ltf_n - 1
+    ltf_price = closes[li]
+    ltf_ef, ltf_es = ltf_ema_f[li], ltf_ema_s[li]
+    ltf_rsi_val = ltf_rsi[li]
+    ltf_atr_val = ltf_atr[li]
+
+    ltf_cross_up = ltf_ef > ltf_es and (li == 0 or ltf_ema_f[li - 1] <= ltf_ema_s[li - 1])
+    ltf_cross_dn = ltf_ef < ltf_es and (li == 0 or ltf_ema_f[li - 1] >= ltf_ema_s[li - 1])
+    ltf_trend_align = (htf_trend == 1 and ltf_ef > ltf_es) or (htf_trend == -1 and ltf_ef < ltf_es)
+
+    lines.append(
+        f"低周期({MTF_LTF_INTERVAL})：收盘={ltf_price:.2f} "
+        f"EMA{MTF_LTF_EMA_FAST}={ltf_ef:.2f} EMA{MTF_LTF_EMA_SLOW}={ltf_es:.2f} "
+        f"ATR={ltf_atr_val:.2f}"
+    )
+
+    # ---- 成交量确认 ----
+    vol_ok = True
+    vol_info = ""
+    if ltf_n >= 9 and len(opens) == ltf_n:
+        amounts = [abs(closes[j] - opens[j]) * (highs[j] - lows[j] + 1) for j in range(ltf_n)]
+        vol_series = _vol_ma(amounts, MTF_VOL_MA_PERIOD)
+        cur_vol = amounts[li]
+        avg_vol = vol_series[li]
+        vol_ok = cur_vol >= avg_vol * MTF_VOL_MULT
+        vol_info = f"成交活跃度={cur_vol:.2f} 均值={avg_vol:.2f} ×{MTF_VOL_MULT} {'✓' if vol_ok else '✗'}"
+    lines.append(f"  {vol_info}" if vol_info else "  成交量数据不足，跳过量能过滤")
+
+    # ---- RSI 过滤 ----
+    rsi_ok = True
+    if ltf_rsi_val is not None:
+        if htf_trend == 1 and ltf_rsi_val > MTF_RSI_LONG_MAX:
+            rsi_ok = False
+        if htf_trend == -1 and ltf_rsi_val < MTF_RSI_SHORT_MIN:
+            rsi_ok = False
+        lines.append(
+            f"  RSI({MTF_RSI_PERIOD})={ltf_rsi_val:.1f} "
+            f"{'✓' if rsi_ok else '✗ 过滤'}"
+        )
+    else:
+        lines.append("  RSI=N/A")
+
+    # ---- 综合判定 ----
+    has_entry_signal = ltf_cross_up if htf_trend == 1 else ltf_cross_dn if htf_trend == -1 else False
+    trend_aligned = ltf_trend_align
+
+    if has_entry_signal:
+        lines.append(f"  入场信号：{'金叉' if htf_trend == 1 else '死叉'}交叉 ✓")
+    elif trend_aligned:
+        lines.append(f"  无交叉但低周期趋势同向（顺势入场）")
+        has_entry_signal = True
+    else:
+        lines.append("  低周期未与高周期趋势对齐，不开仓")
+        return 0, None, None, "\n".join(lines)
+
+    if not rsi_ok:
+        lines.append("→ RSI 过滤，不开仓")
+        return 0, None, None, "\n".join(lines)
+
+    if not vol_ok:
+        lines.append("→ 成交量不足，不开仓")
+        return 0, None, None, "\n".join(lines)
+
+    # ---- 动态止损止盈（基于 ATR）----
+    if ltf_atr_val > 0:
+        sl_dist = ltf_atr_val * MTF_ATR_SL_MULT
+        tp_dist = ltf_atr_val * MTF_ATR_TP_MULT
+    else:
+        sl_dist = ltf_price * STOP_LOSS_RATIO
+        tp_dist = ltf_price * TAKE_PROFIT_RATIO
+
+    if htf_trend == 1:
+        sl = ltf_price - sl_dist
+        tp = ltf_price + tp_dist
+        lines.append(f"→ 做多 | SL={sl:.2f}(ATR×{MTF_ATR_SL_MULT}) TP={tp:.2f}(ATR×{MTF_ATR_TP_MULT})")
+        return 1, sl, tp, "\n".join(lines)
+    else:
+        sl = ltf_price + sl_dist
+        tp = ltf_price - tp_dist
+        lines.append(f"→ 做空 | SL={sl:.2f}(ATR×{MTF_ATR_SL_MULT}) TP={tp:.2f}(ATR×{MTF_ATR_TP_MULT})")
+        return -1, sl, tp, "\n".join(lines)
+
+
 # ---------- 组合：EMA 趋势 + RSI 过滤（避免超买追多、超卖追空）----------
 def _compute_composite(
     highs: List[float],
@@ -288,6 +485,154 @@ def _compute_composite(
     return direction, sl, tp, base_r + f"\n【组合】RSI={r:.1f} 通过"
 
 
+# ---------- 自动策略选择 auto：实时市场分类 → 自动分发最佳子策略 ----------
+def _adx(
+    highs: List[float], lows: List[float], closes: List[float], period: int
+) -> List[float]:
+    """Average Directional Index，衡量趋势强度，不区分方向。"""
+    n = len(closes)
+    adx_out = [0.0] * n
+    if n < period * 2:
+        return adx_out
+
+    plus_dm = [0.0] * n
+    minus_dm = [0.0] * n
+    tr = [0.0] * n
+    for i in range(1, n):
+        up = highs[i] - highs[i - 1]
+        dn = lows[i - 1] - lows[i]
+        plus_dm[i] = up if (up > dn and up > 0) else 0.0
+        minus_dm[i] = dn if (dn > up and dn > 0) else 0.0
+        tr[i] = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+
+    smoothed_tr = [0.0] * n
+    smoothed_plus = [0.0] * n
+    smoothed_minus = [0.0] * n
+    smoothed_tr[period] = sum(tr[1 : period + 1])
+    smoothed_plus[period] = sum(plus_dm[1 : period + 1])
+    smoothed_minus[period] = sum(minus_dm[1 : period + 1])
+    for i in range(period + 1, n):
+        smoothed_tr[i] = smoothed_tr[i - 1] - smoothed_tr[i - 1] / period + tr[i]
+        smoothed_plus[i] = smoothed_plus[i - 1] - smoothed_plus[i - 1] / period + plus_dm[i]
+        smoothed_minus[i] = smoothed_minus[i - 1] - smoothed_minus[i - 1] / period + minus_dm[i]
+
+    dx = [0.0] * n
+    for i in range(period, n):
+        if smoothed_tr[i] == 0:
+            continue
+        di_plus = 100.0 * smoothed_plus[i] / smoothed_tr[i]
+        di_minus = 100.0 * smoothed_minus[i] / smoothed_tr[i]
+        di_sum = di_plus + di_minus
+        dx[i] = 100.0 * abs(di_plus - di_minus) / di_sum if di_sum > 0 else 0.0
+
+    first_adx_idx = period * 2 - 1
+    if first_adx_idx < n:
+        adx_out[first_adx_idx] = sum(dx[period : first_adx_idx + 1]) / period
+        for i in range(first_adx_idx + 1, n):
+            adx_out[i] = (adx_out[i - 1] * (period - 1) + dx[i]) / period
+
+    return adx_out
+
+
+def _classify_market(
+    opens: List[float],
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+) -> Tuple[str, str]:
+    """
+    分析当前市场状态，返回 (regime, detail_text)。
+    regime: "strong_trend" | "trend" | "ranging" | "high_volatility" | "extreme"
+    """
+    n = len(closes)
+    detail: List[str] = ["【自动策略·市场诊断】"]
+
+    adx_val = 0.0
+    if n >= AUTO_ADX_PERIOD * 2:
+        adx_series = _adx(highs, lows, closes, AUTO_ADX_PERIOD)
+        adx_val = adx_series[n - 1]
+    detail.append(f"ADX({AUTO_ADX_PERIOD})={adx_val:.1f}")
+
+    atr_series = _atr(highs, lows, closes, ATR_PERIOD)
+    atr_val = atr_series[n - 1] if n > ATR_PERIOD else 0.0
+    price = closes[n - 1]
+    atr_pct = (atr_val / price * 100) if price > 0 else 0.0
+
+    lookback = min(AUTO_ATR_LOOKBACK, n)
+    atr_window = [atr_series[n - 1 - j] for j in range(lookback) if atr_series[n - 1 - j] > 0]
+    atr_percentile = 50.0
+    if atr_window and atr_val > 0:
+        below = sum(1 for v in atr_window if v <= atr_val)
+        atr_percentile = below / len(atr_window) * 100.0
+    detail.append(f"ATR={atr_val:.2f}({atr_pct:.3f}%) 百分位={atr_percentile:.0f}%")
+
+    rsi_series = _rsi(closes, RSI_PERIOD)
+    rsi_val = rsi_series[n - 1] if n > RSI_PERIOD and rsi_series[n - 1] is not None else 50.0
+    detail.append(f"RSI({RSI_PERIOD})={rsi_val:.1f}")
+
+    if rsi_val is not None and (rsi_val < AUTO_RSI_EXTREME_LOW or rsi_val > AUTO_RSI_EXTREME_HIGH):
+        regime = "extreme"
+        detail.append(f"→ 极端行情 (RSI {'超卖' if rsi_val < AUTO_RSI_EXTREME_LOW else '超买'})")
+    elif adx_val >= AUTO_ADX_STRONG_TREND:
+        regime = "strong_trend"
+        detail.append(f"→ 强趋势 (ADX>{AUTO_ADX_STRONG_TREND})")
+    elif adx_val >= AUTO_ADX_TREND_THRESHOLD:
+        if atr_percentile >= AUTO_ATR_HIGH_PERCENTILE:
+            regime = "high_volatility"
+            detail.append(f"→ 趋势+高波动 (ADX>{AUTO_ADX_TREND_THRESHOLD}, ATR百分位>{AUTO_ATR_HIGH_PERCENTILE})")
+        else:
+            regime = "trend"
+            detail.append(f"→ 普通趋势 (ADX>{AUTO_ADX_TREND_THRESHOLD})")
+    else:
+        if atr_percentile >= AUTO_ATR_HIGH_PERCENTILE:
+            regime = "high_volatility"
+            detail.append(f"→ 高波动震荡 (ADX<{AUTO_ADX_TREND_THRESHOLD}, ATR百分位>{AUTO_ATR_HIGH_PERCENTILE})")
+        else:
+            regime = "ranging"
+            detail.append(f"→ 震荡 (ADX<{AUTO_ADX_TREND_THRESHOLD})")
+
+    return regime, "\n".join(detail)
+
+
+_REGIME_TO_STRATEGY = {
+    "strong_trend": "AUTO_STRATEGY_STRONG_TREND",
+    "trend": "AUTO_STRATEGY_TREND",
+    "ranging": "AUTO_STRATEGY_RANGING",
+    "high_volatility": "AUTO_STRATEGY_HIGH_VOLATILITY",
+    "extreme": "AUTO_STRATEGY_EXTREME",
+}
+
+
+def _compute_auto(
+    opens: List[float],
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+) -> Tuple[int, Optional[float], Optional[float], str]:
+    """自动策略：先诊断市场状态，再分发到最匹配的子策略。"""
+    import config as _cfg
+
+    n = len(closes)
+    if n < AUTO_ADX_PERIOD * 2 + ATR_PERIOD:
+        return 0, None, None, f"【Auto】K线不足(需≥{AUTO_ADX_PERIOD * 2 + ATR_PERIOD}，当前{n})"
+
+    regime, diag_text = _classify_market(opens, highs, lows, closes)
+
+    config_key = _REGIME_TO_STRATEGY[regime]
+    chosen = getattr(_cfg, config_key, "composite")
+
+    diag_text += f"\n选用策略: {chosen}"
+
+    d, sl, tp, sub_rationale = _dispatch_strategy(chosen, opens, highs, lows, closes)
+
+    full_rationale = diag_text + "\n---\n" + sub_rationale
+    return d, sl, tp, full_rationale
+
+
 def _dispatch_strategy(
     s: str,
     opens: List[float],
@@ -305,6 +650,8 @@ def _dispatch_strategy(
         return _compute_rsi(closes)
     if s == "composite":
         return _compute_composite(highs, lows, closes)
+    if s == "mtf":
+        return _compute_mtf(opens, highs, lows, closes)
     return _compute_ema_cross(highs, lows, closes)
 
 
@@ -317,14 +664,17 @@ def compute_signal(
     """
     返回 (direction, stop_loss_price, take_profit_price, rationale)。
     direction: 1=多, -1=空, 0=无。
-    STRATEGY: hf | ema_cross | macd | rsi | composite | consensus | freqtrade
+    STRATEGY: auto | hf | ema_cross | macd | rsi | composite | consensus | mtf | freqtrade
     FREQTRADE_CONFIRM=True 时主策略须与 freqtrade 风格同向才出信号。
     """
     s = (STRATEGY or "ema_cross").strip().lower()
     if s == "freqtrade":
         return compute_freqtrade_signal(opens, highs, lows, closes)
 
-    bd, bsl, btp, br = _dispatch_strategy(s, opens, highs, lows, closes)
+    if s == "auto":
+        bd, bsl, btp, br = _compute_auto(opens, highs, lows, closes)
+    else:
+        bd, bsl, btp, br = _dispatch_strategy(s, opens, highs, lows, closes)
 
     if FREQTRADE_CONFIRM:
         fd, fsl, ftp, fr = compute_freqtrade_signal(opens, highs, lows, closes)
