@@ -1,6 +1,10 @@
 # Poloniex BTC 永续合约机器人配置模板
 # 使用：复制为 config.py 后填写，config.py 已加入 .gitignore 不会推送到 GitHub
 # cp config.example.py config.py
+#
+# ---------- 保守版（减频、降杠杆、改善盈亏比）----------
+# 默认：15m + composite（EMA+ATR+RSI）+ 与 Freqtrade 侧双重确认；避免 1m/hf/auto 频繁换手被手续费与假突破打穿。
+# 若仍偏激进，可把 FREQTRADE_CONFIRM=False（不推荐）或再把 ATR_FILTER_MULT 调到 1.4+。
 
 # API（在 Poloniex 后台创建，需开通期货交易权限）
 API_KEY = ""
@@ -8,14 +12,15 @@ API_SECRET = ""
 
 # 交易对与周期
 SYMBOL = "BTC_USDT_PERP"
-# 高频用 MINUTE_1，普通用 MINUTE_15
-KLINE_INTERVAL = "MINUTE_1"
-KLINE_LIMIT = 100
+# 保守：15 分钟 K 线，显著少于 1 分钟上的噪音信号
+KLINE_INTERVAL = "MINUTE_15"
+KLINE_LIMIT = 120
 
 # 策略选择：auto | hf | ema_cross | macd | rsi | composite | consensus | mtf | freqtrade（technical/qtpylib）
-STRATEGY = "auto"
-# True：主策略须与 freqtrade 风格同向才开仓
-FREQTRADE_CONFIRM = False
+# 保守默认 composite；auto 会在不同市况切换子策略（见文末 AUTO_* 映射，已改为偏稳健）
+STRATEGY = "composite"
+# True：主策略与 freqtrade 风格必须同向才开仓（显著减少逆势单）
+FREQTRADE_CONFIRM = True
 
 # Freqtrade 风格参数（freqtrade_advisory）
 FT_EMA_SHORT = 12
@@ -24,9 +29,11 @@ FT_MACD_FAST = 12
 FT_MACD_SLOW = 26
 FT_MACD_SIGNAL = 9
 FT_USE_MACD_FILTER = True
+# 要求 MACD 柱相对前一根「走强/走弱」，过滤横盘弱交叉
+FT_REQUIRE_HIST_MOMENTUM = True
 FT_RSI_PERIOD = 14
-FT_RSI_LONG_MAX = 72
-FT_RSI_SHORT_MIN = 28
+FT_RSI_LONG_MAX = 64
+FT_RSI_SHORT_MIN = 36
 
 # 模拟：Taker 手续费（与账户实际费率一致）；资金费来自 API fR 或兜底
 FUTURES_TAKER_FEE_RATE = 0.0005
@@ -37,7 +44,7 @@ FUNDING_RATE_FALLBACK = 0.0
 # 每小时 Telegram 汇总（秒）
 HOURLY_REPORT_INTERVAL_SEC = 3600
 
-# 高频策略（hf）：快均线、无 ATR 过滤，信号多
+# 高频策略（hf）：快均线、无 ATR 过滤，信号多（易亏手续费，默认已不用）
 EMA_HF_FAST = 5
 EMA_HF_SLOW = 20
 
@@ -45,7 +52,8 @@ EMA_HF_SLOW = 20
 EMA_FAST = 20
 EMA_SLOW = 60
 ATR_PERIOD = 14
-ATR_FILTER_MULT = 1.0   # 信号需满足 收盘价与均线距离 > ATR * 此系数
+# 越大越「挑趋势」：价离 EMA 须明显超过 ATR×系数才允许交叉信号
+ATR_FILTER_MULT = 1.25
 
 # MACD 策略（macd）
 MACD_FAST = 12
@@ -55,10 +63,10 @@ MACD_ATR_FILTER = True   # 是否用 ATR 过滤弱信号
 
 # RSI 策略（rsi）/ 组合策略过滤（composite）
 RSI_PERIOD = 14
-RSI_OVERSOLD = 30       # 低于此做多
-RSI_OVERBOUGHT = 70     # 高于此做空
-RSI_NEUTRAL_LOW = 40    # composite 做多时要求 RSI < 此
-RSI_NEUTRAL_HIGH = 60   # composite 做空时要求 RSI > 此
+RSI_OVERSOLD = 28       # 略收紧，减少「接飞刀」
+RSI_OVERBOUGHT = 72
+RSI_NEUTRAL_LOW = 42    # composite：做空时若 RSI<此（超卖）不追空
+RSI_NEUTRAL_HIGH = 58   # composite：做多时若 RSI>此（偏高）不追多
 
 # 多交易所共识策略（consensus）：pressure = a*momentum + b*OI_change - c*funding_rate
 # 成交额仅作权重；global_pressure = Σ(volume_weight_i × pressure_i)
@@ -66,61 +74,59 @@ CONSENSUS_EXCHANGES = ["binance", "bybit", "okx", "bitget"]  # 已实现公开 A
 CONSENSUS_A = 1.0       # 短周期价格动量系数（如 5m 涨跌幅）
 CONSENSUS_B = 0.5       # 未平仓量变化系数（无 OI 时为 0）
 CONSENSUS_C = 100.0     # 资金费率系数（越高越偏空，取负）
-CONSENSUS_THRESHOLD_LONG = 0.3   # 超过此开多
-CONSENSUS_THRESHOLD_SHORT = -0.3 # 低于此开空
+CONSENSUS_THRESHOLD_LONG = 0.35   # 略提高，减少边缘多单
+CONSENSUS_THRESHOLD_SHORT = -0.35
 CONSENSUS_MOMENTUM_MINUTES = 5   # 动量周期（分钟）
 
 # 多时间框架策略（mtf）：高周期定趋势 + 低周期找入场 + 成交量/RSI 过滤
-MTF_HTF_INTERVAL = "MINUTE_15"     # 高周期 K 线周期（趋势判定）
-MTF_HTF_LIMIT = 200                # 高周期 K 线拉取数量（需覆盖 EMA200）
-MTF_LTF_INTERVAL = "MINUTE_1"     # 低周期 K 线周期（入场时机）
-MTF_LTF_LIMIT = 100               # 低周期 K 线拉取数量
-MTF_HTF_EMA_FAST = 50             # 高周期快均线（趋势方向）
-MTF_HTF_EMA_SLOW = 200            # 高周期慢均线（长期趋势）
-MTF_LTF_EMA_FAST = 9              # 低周期快均线（入场信号）
-MTF_LTF_EMA_SLOW = 21             # 低周期慢均线（入场信号）
-MTF_RSI_PERIOD = 14               # RSI 周期
-MTF_RSI_LONG_MAX = 70             # 做多时 RSI 不超此值（防追高）
-MTF_RSI_SHORT_MIN = 30            # 做空时 RSI 不低于此值（防杀跌）
-MTF_VOL_MA_PERIOD = 20            # 成交量均线周期
-MTF_VOL_MULT = 1.2                # 信号确认需成交量 > 均量 × 此系数
-MTF_ATR_SL_MULT = 2.0             # 止损 = ATR × 此系数（动态止损）
-MTF_ATR_TP_MULT = 3.0             # 止盈 = ATR × 此系数（动态止盈）
+MTF_HTF_INTERVAL = "MINUTE_15"
+MTF_HTF_LIMIT = 200
+MTF_LTF_INTERVAL = "MINUTE_5"
+MTF_LTF_LIMIT = 120
+MTF_HTF_EMA_FAST = 50
+MTF_HTF_EMA_SLOW = 200
+MTF_LTF_EMA_FAST = 9
+MTF_LTF_EMA_SLOW = 21
+MTF_RSI_PERIOD = 14
+MTF_RSI_LONG_MAX = 65
+MTF_RSI_SHORT_MIN = 35
+MTF_VOL_MA_PERIOD = 20
+MTF_VOL_MULT = 1.35             # 量能要求更高，减少无量假突破
+MTF_ATR_SL_MULT = 2.0
+MTF_ATR_TP_MULT = 3.5           # 略抬高止盈相对止损
 
-# 自动策略（auto）：实时分析市场状态，自动切换最适合的子策略
-# 市场分类依据 ADX 趋势强度 + ATR 波动率百分位 + RSI 极端值
-AUTO_ADX_PERIOD = 14              # ADX 计算周期
-AUTO_ADX_TREND_THRESHOLD = 25     # ADX > 此值判为趋势市；≤ 此值为震荡市
-AUTO_ADX_STRONG_TREND = 40        # ADX > 此值判为强趋势（用 mtf）
-AUTO_ATR_LOOKBACK = 50            # ATR 波动率百分位回看窗口
-AUTO_ATR_HIGH_PERCENTILE = 75     # ATR 百分位 > 此值判为高波动
-AUTO_RSI_EXTREME_LOW = 20         # RSI < 此值判为极端超卖
-AUTO_RSI_EXTREME_HIGH = 80        # RSI > 此值判为极端超买
-# 市场状态 → 策略映射（可改为任意已有策略名）
-AUTO_STRATEGY_STRONG_TREND = "mtf"        # 强趋势 → 多时间框架
-AUTO_STRATEGY_TREND = "composite"         # 普通趋势 → EMA+RSI 组合
-AUTO_STRATEGY_RANGING = "rsi"             # 震荡 → RSI 抄底摸顶
-AUTO_STRATEGY_HIGH_VOLATILITY = "macd"    # 高波动 → MACD 捕捉动量
-AUTO_STRATEGY_EXTREME = "rsi"             # 极端行情 → RSI 超买超卖反转
+# 自动策略（auto）：市场分类后选用子策略（以下为保守映射，减少 rsi/macd 单策略在错误市况的连亏）
+AUTO_ADX_PERIOD = 14
+AUTO_ADX_TREND_THRESHOLD = 25
+AUTO_ADX_STRONG_TREND = 40
+AUTO_ATR_LOOKBACK = 50
+AUTO_ATR_HIGH_PERCENTILE = 75
+AUTO_RSI_EXTREME_LOW = 18
+AUTO_RSI_EXTREME_HIGH = 82
+AUTO_STRATEGY_STRONG_TREND = "mtf"
+AUTO_STRATEGY_TREND = "composite"
+AUTO_STRATEGY_RANGING = "composite"
+AUTO_STRATEGY_HIGH_VOLATILITY = "composite"
+AUTO_STRATEGY_EXTREME = "composite"
 
-# 止损止盈：按「标的价格」涨跌比例。30 倍杠杆下 本金盈亏 ≈ 价格变动% × 30
-STOP_LOSS_RATIO = 0.004   # 约本金 12% 止损（30x）
-TAKE_PROFIT_RATIO = 0.004 # 约本金 12% 止盈（30x）
-# 本金 10% 止盈 → 价格动 10%/30≈0.333% → 取 0.00333；同理本金 10% 止损
-# 最大持仓周期数：每 60 秒一轮；0=不限制持仓时间
-MAX_HOLD_CYCLES = 0
+# 止损止盈：标价比例。TAKE > STOP 形成约 2:1 盈亏比（仍需覆盖双边手续费）
+# 杠杆下本金波动 ≈ 标价变动% × 杠杆；LEVERAGE 已下调时请自行换算
+STOP_LOSS_RATIO = 0.004
+TAKE_PROFIT_RATIO = 0.008
+# 最大持仓周期数：每 60 秒一轮；120≈2 小时强平换手机会，避免长时间扛单
+MAX_HOLD_CYCLES = 120
 
 # 仓位与风控
-POSITION_EQUITY_RATIO = 0.10   # 仓位 = 权益的 10%
-MAX_CONSECUTIVE_LOSSES = 3     # 连续亏损 3 次停机
-DAILY_LOSS_RATIO = 0.05        # 当日亏损达权益 5% 停机
+POSITION_EQUITY_RATIO = 0.08
+MAX_CONSECUTIVE_LOSSES = 2
+DAILY_LOSS_RATIO = 0.04
 
 # 运行模式
 PAPER_MODE = True   # True=模拟，False=实盘
 SIMULATE_ONLY = True
-# 模拟初始本金（重启进程即按此重新开始）
 INITIAL_EQUITY = 10000.0
-LEVERAGE = 30
+# 模拟全仓名义 = 权益×杠杆；保守默认 12x，远低於 30x 可显著降低单笔回撤
+LEVERAGE = 12
 
 # Telegram 通知（直接填写，不填则不发）
 TELEGRAM_BOT_TOKEN = ""

@@ -21,6 +21,7 @@ from config import (
     FT_MACD_SLOW,
     FT_MACD_SIGNAL,
     FT_USE_MACD_FILTER,
+    FT_REQUIRE_HIST_MOMENTUM,
     FT_RSI_PERIOD,
     FT_RSI_LONG_MAX,
     FT_RSI_SHORT_MIN,
@@ -95,6 +96,9 @@ def compute_freqtrade_signal(
             if not ((hist > 0 and hist1 <= 0) or hist > 0):
                 lines.append("EMA金叉但 MACD 柱未配合多头(需柱>0或刚上穿)，过滤")
                 return 0, None, None, "\n".join(lines)
+        if FT_REQUIRE_HIST_MOMENTUM and hist <= hist1:
+            lines.append("MACD 柱未走强(h≤h[-1])，过滤弱金叉")
+            return 0, None, None, "\n".join(lines)
         sl, tp = _sl_tp_long(price)
         lines.append("结论: 做多 (EMA金叉" + ("+MACD确认" if FT_USE_MACD_FILTER else "") + ")")
         return 1, sl, tp, "\n".join(lines)
@@ -107,6 +111,9 @@ def compute_freqtrade_signal(
             if not ((hist < 0 and hist1 >= 0) or hist < 0):
                 lines.append("EMA死叉但 MACD 柱未配合空头(需柱<0或刚下穿)，过滤")
                 return 0, None, None, "\n".join(lines)
+        if FT_REQUIRE_HIST_MOMENTUM and hist >= hist1:
+            lines.append("MACD 柱未走弱(h≥h[-1])，过滤弱死叉")
+            return 0, None, None, "\n".join(lines)
         sl, tp = _sl_tp_short(price)
         lines.append("结论: 做空 (EMA死叉" + ("+MACD确认" if FT_USE_MACD_FILTER else "") + ")")
         return -1, sl, tp, "\n".join(lines)
