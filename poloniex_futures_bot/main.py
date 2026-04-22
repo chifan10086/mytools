@@ -2,6 +2,7 @@
 """
 Poloniex BTC 永续合约交易机器人主循环。
 单向持仓；多策略；止损止盈；模拟模式含 Taker 手续费与资金费摊销、每小时 Telegram 汇报。
+增强版：动态仓位管理、信号质量评分、趋势过滤、详细统计汇报。
 """
 import time
 import logging
@@ -24,6 +25,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
 )
+import strategy
 from strategy import parse_klines, compute_signal, check_stop_loss_take_profit
 from risk_manager import RiskManager
 from paper_engine import PaperEngine
@@ -48,6 +50,8 @@ _last_decision_rationale = ""
 _last_funding_rate_used = 0.0
 _hour_start_equity: Optional[float] = None
 _last_hourly_report_time = 0.0
+_position_entry_time: Optional[float] = None  # 开仓时间戳
+_last_signal_quality: Optional[float] = None  # 最近信号质量
 
 
 def _telegram_enabled() -> bool:
@@ -80,6 +84,7 @@ def _maybe_hourly_report(
     pos_side: Optional[str],
     pos_size: float,
     entry_price: float,
+    risk: RiskManager,
 ) -> None:
     global _hour_start_equity, _last_hourly_report_time
     if not _telegram_enabled() or paper is None:
@@ -90,6 +95,10 @@ def _maybe_hourly_report(
     if now - _last_hourly_report_time < HOURLY_REPORT_INTERVAL_SEC:
         return
     snap = paper.accounting_snapshot()
+    
+    # 获取市场状态摘要
+    market_state = _get_market_state_summary(mark_price)
+    
     notify_hourly_pnl_report(
         equity=equity,
         initial_equity=INITIAL_EQUITY,
@@ -104,13 +113,43 @@ def _maybe_hourly_report(
         taker_fee_rate=FUTURES_TAKER_FEE_RATE,
         last_decision_rationale=_last_decision_rationale,
         symbol=SYMBOL,
+        risk_stats=risk.get_statistics(),
+        market_state=market_state,
     )
     _last_hourly_report_time = now
     _hour_start_equity = equity
 
 
+def _get_market_state_summary(mark_price: float) -> str:
+    """获取市场状态摘要"""
+    try:
+        data = fetch_klines()
+        if not data or len(data) < 50:
+            return "数据不足"
+        o, h, l, c, _ = parse_klines(data)
+        
+        # 趋势
+        ema_20 = strategy._ema(c, 20)
+        ema_50 = strategy._ema(c, 50)
+        trend = "上升" if ema_20[-1] > ema_50[-1] else "下降"
+        
+        # 波动率
+        atr = strategy._atr(h, l, c, 14)
+        atr_pct = (atr[-1] / mark_price * 100) if mark_price > 0 else 0
+        volatility = "高" if atr_pct > 2 else "中" if atr_pct > 1 else "低"
+        
+        # RSI
+        rsi = strategy._rsi(c, 14)
+        rsi_val = rsi[-1] if rsi[-1] is not None else 50
+        rsi_state = "超买" if rsi_val > 70 else "超卖" if rsi_val < 30 else "中性"
+        
+        return f"趋势: {trend} | 波动: {volatility} ({atr_pct:.2f}%) | RSI: {rsi_val:.1f} ({rsi_state})"
+    except Exception as e:
+        return f"获取失败: {str(e)}"
+
+
 def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
-    global _cycles_with_position, _last_decision_rationale
+    global _cycles_with_position, _last_decision_rationale, _position_entry_time, _last_signal_quality
     # 1. K 线
     data = fetch_klines()
     if not data:
@@ -132,11 +171,12 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
         logger.warning("权益<=0，跳过")
         return
 
-    # 3. 信号与依据（仅依赖 K 线，先算以便小时汇报含本轮说明）
-    direction, sl, tp, rationale = compute_signal(o, h, l, c)
+    # 3. 信号与依据（返回包含信号质量）
+    direction, sl, tp, rationale, signal_quality = compute_signal(o, h, l, c)
     _last_decision_rationale = rationale
+    _last_signal_quality = signal_quality
 
-    _maybe_hourly_report(paper, equity, mark_price, pos_side, pos_size, entry_price)
+    _maybe_hourly_report(paper, equity, mark_price, pos_side, pos_size, entry_price, risk)
 
     # 4. 风控
     can_trade, reason = risk.can_trade(equity)
@@ -148,9 +188,11 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
     if pos_side and pos_size > 0:
         sl_tp = check_stop_loss_take_profit(pos_side, entry_price, mark_price)
         if sl_tp:
+            hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
             pnl = close_position(pos_side, pos_size, mark_price, paper)
             risk.record_trade(pnl, equity)
             _cycles_with_position = 0
+            _position_entry_time = None
             equity_after = get_equity_and_position(paper, mark_price)[0]
             notify_close(
                 pos_side,
@@ -159,6 +201,8 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
                 sl_tp + "（本笔已扣平仓手续费）",
                 current_equity=equity_after,
                 initial_equity=INITIAL_EQUITY,
+                entry_price=entry_price,
+                hold_time=hold_time,
             )
             logger.info("平仓 %s @ %s, 盈亏=%.2f", sl_tp, mark_price, pnl)
             return
@@ -166,9 +210,11 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
         if MAX_HOLD_CYCLES > 0:
             _cycles_with_position += 1
             if _cycles_with_position >= MAX_HOLD_CYCLES:
+                hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
                 pnl = close_position(pos_side, pos_size, mark_price, paper)
                 risk.record_trade(pnl, equity)
                 _cycles_with_position = 0
+                _position_entry_time = None
                 equity_after = get_equity_and_position(paper, mark_price)[0]
                 notify_close(
                     pos_side,
@@ -177,21 +223,25 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
                     "最大持仓周期（本笔已扣平仓手续费）",
                     current_equity=equity_after,
                     initial_equity=INITIAL_EQUITY,
+                    entry_price=entry_price,
+                    hold_time=hold_time,
                 )
                 logger.info("平仓 最大持仓周期 @ %s, 盈亏=%.2f", mark_price, pnl)
                 return
     else:
         _cycles_with_position = 0
 
-    # 6. 仓位：模拟模式全仓 30 倍，否则按比例
+    # 6. 仓位：根据风控建议动态调整
+    position_scale = risk.suggest_position_scale()
     if SIMULATE_ONLY:
-        size = position_size_full_leverage(equity, mark_price, LEVERAGE)
+        size = position_size_full_leverage(equity, mark_price, LEVERAGE) * position_scale
     else:
-        size = position_size_from_equity(equity, mark_price)
+        size = position_size_from_equity(equity, mark_price) * position_scale
     if size <= 0:
         return
 
     if pos_side == "LONG" and direction == -1:
+        hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
         pnl = close_position("LONG", pos_size, mark_price, paper)
         risk.record_trade(pnl, equity)
         _cycles_with_position = 0
@@ -204,8 +254,11 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             "反向开空（本笔已扣平仓手续费）",
             current_equity=equity_after,
             initial_equity=INITIAL_EQUITY,
+            entry_price=entry_price,
+            hold_time=hold_time,
         )
         open_short(mark_price, size, sl, tp, paper)
+        _position_entry_time = time.time()
         equity_now = get_equity_and_position(paper, mark_price)[0]
         notify_trade(
             "开空",
@@ -216,10 +269,13 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             current_equity=equity_now,
             initial_equity=INITIAL_EQUITY,
             decision_reason=rationale,
+            signal_quality=signal_quality,
+            position_scale=position_scale,
         )
         logger.info("开空 size=%.4f sl=%s tp=%s", size, sl, tp)
         return
     if pos_side == "SHORT" and direction == 1:
+        hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
         pnl = close_position("SHORT", pos_size, mark_price, paper)
         risk.record_trade(pnl, equity)
         _cycles_with_position = 0
@@ -232,8 +288,11 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             "反向开多（本笔已扣平仓手续费）",
             current_equity=equity_after,
             initial_equity=INITIAL_EQUITY,
+            entry_price=entry_price,
+            hold_time=hold_time,
         )
         open_long(mark_price, size, sl, tp, paper)
+        _position_entry_time = time.time()
         equity_now = get_equity_and_position(paper, mark_price)[0]
         notify_trade(
             "开多",
@@ -244,6 +303,8 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             current_equity=equity_now,
             initial_equity=INITIAL_EQUITY,
             decision_reason=rationale,
+            signal_quality=signal_quality,
+            position_scale=position_scale,
         )
         logger.info("开多 size=%.4f sl=%s tp=%s", size, sl, tp)
         return
@@ -255,6 +316,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
         return
     if direction == 1:
         open_long(mark_price, size, sl, tp, paper)
+        _position_entry_time = time.time()
         equity_now = get_equity_and_position(paper, mark_price)[0]
         notify_trade(
             "开多",
@@ -265,10 +327,13 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             current_equity=equity_now,
             initial_equity=INITIAL_EQUITY,
             decision_reason=rationale,
+            signal_quality=signal_quality,
+            position_scale=position_scale,
         )
         logger.info("开多 size=%.4f sl=%s tp=%s", size, sl, tp)
     elif direction == -1:
         open_short(mark_price, size, sl, tp, paper)
+        _position_entry_time = time.time()
         equity_now = get_equity_and_position(paper, mark_price)[0]
         notify_trade(
             "开空",
@@ -279,6 +344,8 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             current_equity=equity_now,
             initial_equity=INITIAL_EQUITY,
             decision_reason=rationale,
+            signal_quality=signal_quality,
+            position_scale=position_scale,
         )
         logger.info("开空 size=%.4f sl=%s tp=%s", size, sl, tp)
     elif paper:

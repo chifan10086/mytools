@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 多策略可选：EMA 交叉 / MACD / RSI / 组合(趋势+RSI 过滤) / freqtrade 风格(technical)。
-统一接口 compute_signal() -> (direction, sl, tp, rationale)；config.STRATEGY 选择策略。
+统一接口 compute_signal() -> (direction, sl, tp, rationale, signal_quality)；config.STRATEGY 选择策略。
+增强版：信号质量评分、趋势过滤、防假突破。
 """
 from typing import List, Tuple, Optional
 
@@ -655,26 +656,158 @@ def _dispatch_strategy(
     return _compute_ema_cross(highs, lows, closes)
 
 
+def _calculate_signal_quality(
+    opens: List[float],
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+    direction: int,
+) -> float:
+    """
+    计算信号质量评分 (0-1)，综合考虑：
+    1. 趋势强度 (ADX)
+    2. 成交量确认
+    3. 价格动量
+    4. 波动率适中性
+    """
+    if direction == 0:
+        return 0.0
+    
+    n = len(closes)
+    if n < 50:
+        return 0.5
+    
+    score = 0.0
+    
+    # 1. ADX 趋势强度 (0-0.3分)
+    if n >= AUTO_ADX_PERIOD * 2:
+        adx_series = _adx(highs, lows, closes, AUTO_ADX_PERIOD)
+        adx_val = adx_series[n - 1]
+        if adx_val >= 40:
+            score += 0.3
+        elif adx_val >= 25:
+            score += 0.2
+        elif adx_val >= 20:
+            score += 0.1
+    
+    # 2. 成交量确认 (0-0.25分)
+    if len(opens) == n:
+        amounts = [abs(closes[j] - opens[j]) * (highs[j] - lows[j] + 1) for j in range(n)]
+        if n >= 20:
+            recent_vol = sum(amounts[-5:]) / 5
+            avg_vol = sum(amounts[-20:]) / 20
+            if recent_vol > avg_vol * 1.5:
+                score += 0.25
+            elif recent_vol > avg_vol * 1.2:
+                score += 0.15
+            elif recent_vol > avg_vol:
+                score += 0.05
+    
+    # 3. 价格动量 (0-0.25分)
+    if n >= 10:
+        momentum = (closes[-1] - closes[-10]) / closes[-10] if closes[-10] > 0 else 0
+        if direction == 1 and momentum > 0.02:
+            score += 0.25
+        elif direction == 1 and momentum > 0.01:
+            score += 0.15
+        elif direction == -1 and momentum < -0.02:
+            score += 0.25
+        elif direction == -1 and momentum < -0.01:
+            score += 0.15
+    
+    # 4. 波动率适中 (0-0.2分) - 太高或太低都不好
+    atr_series = _atr(highs, lows, closes, ATR_PERIOD)
+    atr_val = atr_series[n - 1] if n > ATR_PERIOD else 0
+    price = closes[n - 1]
+    atr_pct = (atr_val / price * 100) if price > 0 else 0
+    if 0.5 <= atr_pct <= 3.0:
+        score += 0.2
+    elif 0.3 <= atr_pct <= 4.0:
+        score += 0.1
+    
+    return min(score, 1.0)
+
+
+def _check_trend_filter(
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+    direction: int,
+) -> Tuple[bool, str]:
+    """
+    趋势过滤：防止逆势交易和假突破
+    返回 (是否通过, 说明)
+    """
+    n = len(closes)
+    if n < 50 or direction == 0:
+        return True, ""
+    
+    # 检查长期趋势 (EMA 50)
+    ema_50 = _ema(closes, 50)
+    price = closes[-1]
+    
+    # 多头信号但价格远低于 EMA50
+    if direction == 1 and price < ema_50[-1] * 0.98:
+        return False, f"价格 {price:.2f} 低于 EMA50 {ema_50[-1]:.2f}，逆势做多风险高"
+    
+    # 空头信号但价格远高于 EMA50
+    if direction == -1 and price > ema_50[-1] * 1.02:
+        return False, f"价格 {price:.2f} 高于 EMA50 {ema_50[-1]:.2f}，逆势做空风险高"
+    
+    # 检查假突破：价格刚突破但立即回落
+    if n >= 3:
+        if direction == 1:
+            # 检查是否刚突破阻力位但回落
+            recent_high = max(highs[-10:-1]) if n >= 10 else max(highs[:-1])
+            if closes[-1] > recent_high and closes[-1] < highs[-1] * 0.998:
+                return False, "疑似假突破：突破后立即回落"
+        elif direction == -1:
+            # 检查是否刚跌破支撑位但反弹
+            recent_low = min(lows[-10:-1]) if n >= 10 else min(lows[:-1])
+            if closes[-1] < recent_low and closes[-1] > lows[-1] * 1.002:
+                return False, "疑似假突破：跌破后立即反弹"
+    
+    return True, "趋势过滤通过"
+
+
 def compute_signal(
     opens: List[float],
     highs: List[float],
     lows: List[float],
     closes: List[float],
-) -> Tuple[int, Optional[float], Optional[float], str]:
+) -> Tuple[int, Optional[float], Optional[float], str, Optional[float]]:
     """
-    返回 (direction, stop_loss_price, take_profit_price, rationale)。
+    返回 (direction, stop_loss_price, take_profit_price, rationale, signal_quality)。
     direction: 1=多, -1=空, 0=无。
+    signal_quality: 0-1 信号质量评分
     STRATEGY: auto | hf | ema_cross | macd | rsi | composite | consensus | mtf | freqtrade
     FREQTRADE_CONFIRM=True 时主策略须与 freqtrade 风格同向才出信号。
     """
     s = (STRATEGY or "ema_cross").strip().lower()
     if s == "freqtrade":
-        return compute_freqtrade_signal(opens, highs, lows, closes)
+        bd, bsl, btp, br = compute_freqtrade_signal(opens, highs, lows, closes)
+        quality = _calculate_signal_quality(opens, highs, lows, closes, bd)
+        return bd, bsl, btp, br, quality
 
     if s == "auto":
         bd, bsl, btp, br = _compute_auto(opens, highs, lows, closes)
     else:
         bd, bsl, btp, br = _dispatch_strategy(s, opens, highs, lows, closes)
+
+    # 趋势过滤
+    if bd != 0:
+        trend_ok, trend_msg = _check_trend_filter(highs, lows, closes, bd)
+        if not trend_ok:
+            quality = _calculate_signal_quality(opens, highs, lows, closes, 0)
+            return 0, None, None, br + f"\n\n【趋势过滤】{trend_msg}", quality
+        br += f"\n【趋势过滤】{trend_msg}"
+
+    # 计算信号质量
+    quality = _calculate_signal_quality(opens, highs, lows, closes, bd)
+    
+    # 低质量信号过滤
+    if bd != 0 and quality < 0.3:
+        return 0, None, None, br + f"\n\n【信号质量过滤】质量评分 {quality:.2f} < 0.3，信号太弱", quality
 
     if FREQTRADE_CONFIRM:
         fd, fsl, ftp, fr = compute_freqtrade_signal(opens, highs, lows, closes)
@@ -687,6 +820,7 @@ def compute_signal(
                 + br
                 + "\n---\nFreqtrade:\n"
                 + fr,
+                quality,
             )
         if bd in (1, -1) and fd == bd:
             sl = bsl if bsl is not None else fsl
@@ -696,15 +830,17 @@ def compute_signal(
                 sl,
                 tp,
                 "【主策略 + Freqtrade 一致】\n" + br + "\n---\n" + fr,
+                quality,
             )
         return (
             0,
             None,
             None,
             "【无开仓信号】\n主策略:\n" + br + "\n---\nFreqtrade:\n" + fr,
+            quality,
         )
 
-    return bd, bsl, btp, br
+    return bd, bsl, btp, br, quality
 
 
 def check_stop_loss_take_profit(
