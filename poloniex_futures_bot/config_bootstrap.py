@@ -49,6 +49,11 @@ _DEFAULTS = {
     "AUTO_STRATEGY_RANGING": "rsi",
     "AUTO_STRATEGY_HIGH_VOLATILITY": "macd",
     "AUTO_STRATEGY_EXTREME": "rsi",
+    "DECISION_JOURNAL_ENABLED": True,
+    "DECISION_JOURNAL_PATH": "logs/decision_journal.jsonl",
+    "DECISION_JOURNAL_EXCHANGES": ["binance", "bybit", "okx", "bitget", "gate", "htx", "kucoin", "mexc"],
+    "DECISION_JOURNAL_PARALLEL": True,
+    "CCXT_PROXY": "",
 }
 
 for _name, _val in _DEFAULTS.items():

@@ -275,7 +275,7 @@ def _compute_consensus(
 ) -> Tuple[int, Optional[float], Optional[float], str]:
     from multi_exchange import fetch_exchanges, volume_weights, global_pressure
 
-    records = fetch_exchanges(CONSENSUS_EXCHANGES, CONSENSUS_MOMENTUM_MINUTES)
+    records = fetch_exchanges(CONSENSUS_EXCHANGES, CONSENSUS_MOMENTUM_MINUTES, parallel=True)
     if len(records) < 2:
         return 0, None, None, "【共识】交易所数据不足"
     weights = volume_weights(records)

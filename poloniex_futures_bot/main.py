@@ -6,7 +6,7 @@ Poloniex BTC 永续合约交易机器人主循环。
 """
 import time
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import config_bootstrap  # noqa: F401  # 旧版 config.py 缺省字段时补齐
 
@@ -40,6 +40,7 @@ from exchange import (
 )
 from notify import notify_trade, notify_close, save_equity_redis, notify_hourly_pnl_report
 from rest_client import get_market_funding_rate
+from decision_journal import append_cycle_journal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -150,66 +151,82 @@ def _get_market_state_summary(mark_price: float) -> str:
 
 def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
     global _cycles_with_position, _last_decision_rationale, _position_entry_time, _last_signal_quality
-    # 1. K 线
-    data = fetch_klines()
-    if not data:
-        logger.warning("无 K 线数据")
-        return
-    o, h, l, c, _ = parse_klines(data)
-    if len(c) < 2:
-        return
-    mark_price = c[-1]
-
-    # 1.1 资金费摊销（仅 Paper）
-    if paper is not None:
-        fr = _resolve_funding_rate()
-        paper.accrue_funding(mark_price, fr, time.time())
-
-    # 2. 权益与持仓
-    equity, pos_side, pos_size, entry_price = get_equity_and_position(paper, mark_price)
-    if equity <= 0:
-        logger.warning("权益<=0，跳过")
-        return
-
-    # 3. 信号与依据（返回包含信号质量）
-    direction, sl, tp, rationale, signal_quality = compute_signal(o, h, l, c)
-    _last_decision_rationale = rationale
-    _last_signal_quality = signal_quality
-
-    _maybe_hourly_report(paper, equity, mark_price, pos_side, pos_size, entry_price, risk)
-
-    # 4. 风控
-    can_trade, reason = risk.can_trade(equity)
-    if not can_trade:
-        logger.warning("风控停机: %s", reason)
-        return
-
-    # 5. 止损/止盈检查（有持仓时）
-    if pos_side and pos_size > 0:
-        sl_tp = check_stop_loss_take_profit(pos_side, entry_price, mark_price)
-        if sl_tp:
-            hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
-            pnl = close_position(pos_side, pos_size, mark_price, paper)
-            risk.record_trade(pnl, equity)
-            _cycles_with_position = 0
-            _position_entry_time = None
-            equity_after = get_equity_and_position(paper, mark_price)[0]
-            notify_close(
-                pos_side,
-                mark_price,
-                pnl,
-                sl_tp + "（本笔已扣平仓手续费）",
-                current_equity=equity_after,
-                initial_equity=INITIAL_EQUITY,
-                entry_price=entry_price,
-                hold_time=hold_time,
-            )
-            logger.info("平仓 %s @ %s, 盈亏=%.2f", sl_tp, mark_price, pnl)
+    jm: Dict[str, Any] = {"unix_ts": time.time()}
+    try:
+        # 1. K 线
+        data = fetch_klines()
+        if not data:
+            logger.warning("无 K 线数据")
+            jm["abort"] = "no_klines"
+            jm["action"] = "abort_no_klines"
             return
-        # 最大持仓周期：到点强制平仓，便于频繁重新开仓
-        if MAX_HOLD_CYCLES > 0:
-            _cycles_with_position += 1
-            if _cycles_with_position >= MAX_HOLD_CYCLES:
+        o, h, l, c, _ = parse_klines(data)
+        if len(c) < 2:
+            jm["abort"] = "insufficient_bars"
+            jm["action"] = "abort_insufficient_bars"
+            return
+        mark_price = c[-1]
+        jm.update(
+            {
+                "o": o,
+                "h": h,
+                "l": l,
+                "c": c,
+                "mark_price": mark_price,
+            }
+        )
+
+        # 1.1 资金费摊销（仅 Paper）
+        if paper is not None:
+            fr = _resolve_funding_rate()
+            paper.accrue_funding(mark_price, fr, time.time())
+            jm["funding_rate"] = _last_funding_rate_used
+
+        # 2. 权益与持仓
+        equity, pos_side, pos_size, entry_price = get_equity_and_position(paper, mark_price)
+        jm.update(
+            {
+                "equity": equity,
+                "pos_side": pos_side,
+                "pos_size": pos_size,
+                "entry_price": entry_price,
+            }
+        )
+        if equity <= 0:
+            logger.warning("权益<=0，跳过")
+            jm["abort"] = "bad_equity"
+            jm["action"] = "abort_bad_equity"
+            return
+
+        # 3. 信号与依据（返回包含信号质量）
+        direction, sl, tp, rationale, signal_quality = compute_signal(o, h, l, c)
+        _last_decision_rationale = rationale
+        _last_signal_quality = signal_quality
+        jm.update(
+            {
+                "direction": direction,
+                "sl": sl,
+                "tp": tp,
+                "rationale": rationale,
+                "signal_quality": signal_quality,
+            }
+        )
+
+        _maybe_hourly_report(paper, equity, mark_price, pos_side, pos_size, entry_price, risk)
+
+        # 4. 风控
+        can_trade, reason = risk.can_trade(equity)
+        jm["can_trade"] = can_trade
+        jm["risk_reason"] = reason
+        if not can_trade:
+            logger.warning("风控停机: %s", reason)
+            jm["action"] = "risk_blocked"
+            return
+
+        # 5. 止损/止盈检查（有持仓时）
+        if pos_side and pos_size > 0:
+            sl_tp = check_stop_loss_take_profit(pos_side, entry_price, mark_price)
+            if sl_tp:
                 hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
                 pnl = close_position(pos_side, pos_size, mark_price, paper)
                 risk.record_trade(pnl, equity)
@@ -220,136 +237,172 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
                     pos_side,
                     mark_price,
                     pnl,
-                    "最大持仓周期（本笔已扣平仓手续费）",
+                    sl_tp + "（本笔已扣平仓手续费）",
                     current_equity=equity_after,
                     initial_equity=INITIAL_EQUITY,
                     entry_price=entry_price,
                     hold_time=hold_time,
                 )
-                logger.info("平仓 最大持仓周期 @ %s, 盈亏=%.2f", mark_price, pnl)
+                logger.info("平仓 %s @ %s, 盈亏=%.2f", sl_tp, mark_price, pnl)
+                jm["action"] = "close_" + str(sl_tp)
                 return
-    else:
-        _cycles_with_position = 0
+            # 最大持仓周期：到点强制平仓，便于频繁重新开仓
+            if MAX_HOLD_CYCLES > 0:
+                _cycles_with_position += 1
+                if _cycles_with_position >= MAX_HOLD_CYCLES:
+                    hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
+                    pnl = close_position(pos_side, pos_size, mark_price, paper)
+                    risk.record_trade(pnl, equity)
+                    _cycles_with_position = 0
+                    _position_entry_time = None
+                    equity_after = get_equity_and_position(paper, mark_price)[0]
+                    notify_close(
+                        pos_side,
+                        mark_price,
+                        pnl,
+                        "最大持仓周期（本笔已扣平仓手续费）",
+                        current_equity=equity_after,
+                        initial_equity=INITIAL_EQUITY,
+                        entry_price=entry_price,
+                        hold_time=hold_time,
+                    )
+                    logger.info("平仓 最大持仓周期 @ %s, 盈亏=%.2f", mark_price, pnl)
+                    jm["action"] = "close_max_hold_cycles"
+                    return
+        else:
+            _cycles_with_position = 0
 
-    # 6. 仓位：根据风控建议动态调整
-    position_scale = risk.suggest_position_scale()
-    if SIMULATE_ONLY:
-        size = position_size_full_leverage(equity, mark_price, LEVERAGE) * position_scale
-    else:
-        size = position_size_from_equity(equity, mark_price) * position_scale
-    if size <= 0:
-        return
+        # 6. 仓位：根据风控建议动态调整
+        position_scale = risk.suggest_position_scale()
+        jm["position_scale"] = position_scale
+        if SIMULATE_ONLY:
+            size = position_size_full_leverage(equity, mark_price, LEVERAGE) * position_scale
+        else:
+            size = position_size_from_equity(equity, mark_price) * position_scale
+        if size <= 0:
+            jm["action"] = "skip_zero_size"
+            return
 
-    if pos_side == "LONG" and direction == -1:
-        hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
-        pnl = close_position("LONG", pos_size, mark_price, paper)
-        risk.record_trade(pnl, equity)
-        _cycles_with_position = 0
-        equity_after = get_equity_and_position(paper, mark_price)[0]
-        logger.info("平多 @ %s, 盈亏=%.2f，准备开空", mark_price, pnl)
-        notify_close(
-            "LONG",
-            mark_price,
-            pnl,
-            "反向开空（本笔已扣平仓手续费）",
-            current_equity=equity_after,
-            initial_equity=INITIAL_EQUITY,
-            entry_price=entry_price,
-            hold_time=hold_time,
-        )
-        open_short(mark_price, size, sl, tp, paper)
-        _position_entry_time = time.time()
-        equity_now = get_equity_and_position(paper, mark_price)[0]
-        notify_trade(
-            "开空",
-            mark_price,
-            size,
-            sl,
-            tp,
-            current_equity=equity_now,
-            initial_equity=INITIAL_EQUITY,
-            decision_reason=rationale,
-            signal_quality=signal_quality,
-            position_scale=position_scale,
-        )
-        logger.info("开空 size=%.4f sl=%s tp=%s", size, sl, tp)
-        return
-    if pos_side == "SHORT" and direction == 1:
-        hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
-        pnl = close_position("SHORT", pos_size, mark_price, paper)
-        risk.record_trade(pnl, equity)
-        _cycles_with_position = 0
-        equity_after = get_equity_and_position(paper, mark_price)[0]
-        logger.info("平空 @ %s, 盈亏=%.2f，准备开多", mark_price, pnl)
-        notify_close(
-            "SHORT",
-            mark_price,
-            pnl,
-            "反向开多（本笔已扣平仓手续费）",
-            current_equity=equity_after,
-            initial_equity=INITIAL_EQUITY,
-            entry_price=entry_price,
-            hold_time=hold_time,
-        )
-        open_long(mark_price, size, sl, tp, paper)
-        _position_entry_time = time.time()
-        equity_now = get_equity_and_position(paper, mark_price)[0]
-        notify_trade(
-            "开多",
-            mark_price,
-            size,
-            sl,
-            tp,
-            current_equity=equity_now,
-            initial_equity=INITIAL_EQUITY,
-            decision_reason=rationale,
-            signal_quality=signal_quality,
-            position_scale=position_scale,
-        )
-        logger.info("开多 size=%.4f sl=%s tp=%s", size, sl, tp)
-        return
+        if pos_side == "LONG" and direction == -1:
+            hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
+            pnl = close_position("LONG", pos_size, mark_price, paper)
+            risk.record_trade(pnl, equity)
+            _cycles_with_position = 0
+            equity_after = get_equity_and_position(paper, mark_price)[0]
+            logger.info("平多 @ %s, 盈亏=%.2f，准备开空", mark_price, pnl)
+            notify_close(
+                "LONG",
+                mark_price,
+                pnl,
+                "反向开空（本笔已扣平仓手续费）",
+                current_equity=equity_after,
+                initial_equity=INITIAL_EQUITY,
+                entry_price=entry_price,
+                hold_time=hold_time,
+            )
+            open_short(mark_price, size, sl, tp, paper)
+            _position_entry_time = time.time()
+            equity_now = get_equity_and_position(paper, mark_price)[0]
+            notify_trade(
+                "开空",
+                mark_price,
+                size,
+                sl,
+                tp,
+                current_equity=equity_now,
+                initial_equity=INITIAL_EQUITY,
+                decision_reason=rationale,
+                signal_quality=signal_quality,
+                position_scale=position_scale,
+            )
+            logger.info("开空 size=%.4f sl=%s tp=%s", size, sl, tp)
+            jm["action"] = "reverse_long_to_short"
+            return
+        if pos_side == "SHORT" and direction == 1:
+            hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
+            pnl = close_position("SHORT", pos_size, mark_price, paper)
+            risk.record_trade(pnl, equity)
+            _cycles_with_position = 0
+            equity_after = get_equity_and_position(paper, mark_price)[0]
+            logger.info("平空 @ %s, 盈亏=%.2f，准备开多", mark_price, pnl)
+            notify_close(
+                "SHORT",
+                mark_price,
+                pnl,
+                "反向开多（本笔已扣平仓手续费）",
+                current_equity=equity_after,
+                initial_equity=INITIAL_EQUITY,
+                entry_price=entry_price,
+                hold_time=hold_time,
+            )
+            open_long(mark_price, size, sl, tp, paper)
+            _position_entry_time = time.time()
+            equity_now = get_equity_and_position(paper, mark_price)[0]
+            notify_trade(
+                "开多",
+                mark_price,
+                size,
+                sl,
+                tp,
+                current_equity=equity_now,
+                initial_equity=INITIAL_EQUITY,
+                decision_reason=rationale,
+                signal_quality=signal_quality,
+                position_scale=position_scale,
+            )
+            logger.info("开多 size=%.4f sl=%s tp=%s", size, sl, tp)
+            jm["action"] = "reverse_short_to_long"
+            return
 
-    # 无仓或同向不加仓
-    if pos_side:
-        if paper:
+        # 无仓或同向不加仓
+        if pos_side:
+            if paper:
+                save_equity_redis(equity, INITIAL_EQUITY)
+            jm["action"] = "hold_same_direction_no_add"
+            return
+        if direction == 1:
+            open_long(mark_price, size, sl, tp, paper)
+            _position_entry_time = time.time()
+            equity_now = get_equity_and_position(paper, mark_price)[0]
+            notify_trade(
+                "开多",
+                mark_price,
+                size,
+                sl,
+                tp,
+                current_equity=equity_now,
+                initial_equity=INITIAL_EQUITY,
+                decision_reason=rationale,
+                signal_quality=signal_quality,
+                position_scale=position_scale,
+            )
+            logger.info("开多 size=%.4f sl=%s tp=%s", size, sl, tp)
+            jm["action"] = "open_long"
+        elif direction == -1:
+            open_short(mark_price, size, sl, tp, paper)
+            _position_entry_time = time.time()
+            equity_now = get_equity_and_position(paper, mark_price)[0]
+            notify_trade(
+                "开空",
+                mark_price,
+                size,
+                sl,
+                tp,
+                current_equity=equity_now,
+                initial_equity=INITIAL_EQUITY,
+                decision_reason=rationale,
+                signal_quality=signal_quality,
+                position_scale=position_scale,
+            )
+            logger.info("开空 size=%.4f sl=%s tp=%s", size, sl, tp)
+            jm["action"] = "open_short"
+        elif paper:
             save_equity_redis(equity, INITIAL_EQUITY)
-        return
-    if direction == 1:
-        open_long(mark_price, size, sl, tp, paper)
-        _position_entry_time = time.time()
-        equity_now = get_equity_and_position(paper, mark_price)[0]
-        notify_trade(
-            "开多",
-            mark_price,
-            size,
-            sl,
-            tp,
-            current_equity=equity_now,
-            initial_equity=INITIAL_EQUITY,
-            decision_reason=rationale,
-            signal_quality=signal_quality,
-            position_scale=position_scale,
-        )
-        logger.info("开多 size=%.4f sl=%s tp=%s", size, sl, tp)
-    elif direction == -1:
-        open_short(mark_price, size, sl, tp, paper)
-        _position_entry_time = time.time()
-        equity_now = get_equity_and_position(paper, mark_price)[0]
-        notify_trade(
-            "开空",
-            mark_price,
-            size,
-            sl,
-            tp,
-            current_equity=equity_now,
-            initial_equity=INITIAL_EQUITY,
-            decision_reason=rationale,
-            signal_quality=signal_quality,
-            position_scale=position_scale,
-        )
-        logger.info("开空 size=%.4f sl=%s tp=%s", size, sl, tp)
-    elif paper:
-        save_equity_redis(equity, INITIAL_EQUITY)
+            jm["action"] = "flat_no_signal"
+        else:
+            jm["action"] = "flat_no_signal"
+    finally:
+        append_cycle_journal(jm, risk)
 
 
 def main() -> None:

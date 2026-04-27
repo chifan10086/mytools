@@ -70,7 +70,7 @@ RSI_NEUTRAL_HIGH = 58   # composite：做多时若 RSI>此（偏高）不追多
 
 # 多交易所共识策略（consensus）：pressure = a*momentum + b*OI_change - c*funding_rate
 # 成交额仅作权重；global_pressure = Σ(volume_weight_i × pressure_i)
-CONSENSUS_EXCHANGES = ["binance", "bybit", "okx", "bitget"]  # 已实现公开 API 的 4 家，可删减
+CONSENSUS_EXCHANGES = ["binance", "bybit", "okx", "bitget", "gate", "htx", "kucoin", "mexc"]  # ccxt 别名；可删减
 CONSENSUS_A = 1.0       # 短周期价格动量系数（如 5m 涨跌幅）
 CONSENSUS_B = 0.5       # 未平仓量变化系数（无 OI 时为 0）
 CONSENSUS_C = 100.0     # 资金费率系数（越高越偏空，取负）
@@ -134,6 +134,17 @@ TELEGRAM_CHAT_ID = None  # 如 -1001234567890
 
 # Redis（Docker Compose 时改为 redis://redis:6379/0）
 REDIS_URL = "redis://127.0.0.1:6379/0"
+
+# 决策与多所数据 JSONL 日志（每轮一行，供复盘；与 STRATEGY 无关，始终记录 cross_exchange）
+DECISION_JOURNAL_ENABLED = True
+DECISION_JOURNAL_PATH = "logs/decision_journal.jsonl"
+# 日志里拉取的交易所（可多于 CONSENSUS_EXCHANGES）；需与 multi_exchange.fetch_exchanges 内实现一致
+DECISION_JOURNAL_EXCHANGES = ["binance", "bybit", "okx", "bitget", "gate", "htx", "kucoin", "mexc"]
+DECISION_JOURNAL_PARALLEL = True
+
+# ccxt 拉取多所公开数据时的 HTTP/SOCKS 代理（国内访问 binance 等常用）；留空则直连
+# 例：CCXT_PROXY = "http://127.0.0.1:7890" 或 "socks5://127.0.0.1:1080"
+CCXT_PROXY = ""
 
 # 请求
 BASE_URL = "https://api.poloniex.com"
