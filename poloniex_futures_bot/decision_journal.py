@@ -129,6 +129,24 @@ def _cross_exchange_block(mark_price: float) -> Dict[str, Any]:
     return out
 
 
+def cross_exchange_snapshot(mark_price: float) -> Dict[str, Any]:
+    """多所 pressure / 价差块，与日志字段一致；供主循环门禁与 journal 复用。"""
+    return _cross_exchange_block(mark_price)
+
+
+def prefetch_cross_exchange_for_cycle(mark_price: float, jm: Dict[str, Any]) -> None:
+    """
+    决策日志或与多所对齐门禁需要时，每轮最多拉取一次 ccxt，写入 jm['cross_exchange']。
+    append_cycle_journal 若发现已有字段则不再重复请求。
+    """
+    if mark_price <= 0:
+        return
+    need_align = _cfg_bool("ENTRY_REQUIRE_CROSS_PRESSURE_ALIGN", False)
+    if not journal_enabled() and not need_align:
+        return
+    jm["cross_exchange"] = _cross_exchange_block(mark_price)
+
+
 def append_cycle_journal(jm: Dict[str, Any], risk: Any) -> None:
     """
     jm: main 循环内累积字段，至少可有 unix_ts、abort、action 等。
@@ -182,7 +200,8 @@ def append_cycle_journal(jm: Dict[str, Any], risk: Any) -> None:
         if isinstance(o, list) and isinstance(h, list) and isinstance(l, list) and isinstance(c, list) and len(c) >= 14:
             record["poloniex"] = _poloniex_derived(o, h, l, c, mark if mark > 0 else float(c[-1]))
         if mark > 0 and not jm.get("skip_cross_exchange"):
-            record["cross_exchange"] = _cross_exchange_block(mark)
+            cx = jm.get("cross_exchange")
+            record["cross_exchange"] = cx if isinstance(cx, dict) else _cross_exchange_block(mark)
     except Exception as e:
         record["journal_build_error"] = str(e)
         logger.warning("决策日志组装异常: %s", e)

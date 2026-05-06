@@ -54,6 +54,12 @@ _DEFAULTS = {
     "DECISION_JOURNAL_EXCHANGES": ["binance", "bybit", "okx", "bitget", "gate", "htx", "kucoin", "mexc"],
     "DECISION_JOURNAL_PARALLEL": True,
     "CCXT_PROXY": "",
+    "ENTRY_MIN_SIGNAL_QUALITY": 0.0,
+    "ENTRY_MIN_SIGNAL_QUALITY_REVERSE": 0.0,
+    "ENTRY_REQUIRE_CROSS_PRESSURE_ALIGN": False,
+    "ENTRY_CROSS_PRESSURE_MIN_ALIGN": 0.0006,
+    "ENTRY_CROSS_PRESSURE_FAIL_OPEN": True,
+    "ENTRY_CROSS_MIN_EXCHANGES_OK": 4,
 }
 
 for _name, _val in _DEFAULTS.items():

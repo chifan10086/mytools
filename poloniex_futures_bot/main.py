@@ -40,7 +40,8 @@ from exchange import (
 )
 from notify import notify_trade, notify_close, save_equity_redis, notify_hourly_pnl_report
 from rest_client import get_market_funding_rate
-from decision_journal import append_cycle_journal
+from decision_journal import append_cycle_journal, prefetch_cross_exchange_for_cycle
+from entry_gates import passes_entry_gates, will_open_or_reverse
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -212,6 +213,8 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             }
         )
 
+        prefetch_cross_exchange_for_cycle(mark_price, jm)
+
         _maybe_hourly_report(paper, equity, mark_price, pos_side, pos_size, entry_price, risk)
 
         # 4. 风控
@@ -282,6 +285,18 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
         if size <= 0:
             jm["action"] = "skip_zero_size"
             return
+
+        if will_open_or_reverse(direction, pos_side):
+            ok_gate, gate_reason = passes_entry_gates(
+                direction, signal_quality, pos_side, jm.get("cross_exchange")
+            )
+            if not ok_gate:
+                jm["entry_gate_reason"] = gate_reason
+                jm["action"] = "skip_entry_gate"
+                logger.info("开仓门禁拦截: %s", gate_reason)
+                if paper:
+                    save_equity_redis(equity, INITIAL_EQUITY)
+                return
 
         if pos_side == "LONG" and direction == -1:
             hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None

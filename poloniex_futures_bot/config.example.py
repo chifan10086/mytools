@@ -121,6 +121,17 @@ POSITION_EQUITY_RATIO = 0.08
 MAX_CONSECUTIVE_LOSSES = 2
 DAILY_LOSS_RATIO = 0.04
 
+# 开仓门禁（按 logs/decision_journal.jsonl 复盘：边际 quality≈0.30–0.35 的成交易连亏；可提高阈值并要求多所 pressure 同向）
+# 设为 0 可关闭对应项。反手默认更严（多付一次平仓手续费）。
+ENTRY_MIN_SIGNAL_QUALITY = 0.42
+ENTRY_MIN_SIGNAL_QUALITY_REVERSE = 0.52
+ENTRY_REQUIRE_CROSS_PRESSURE_ALIGN = True
+# 做多需 global_pressure >= 该值；做空需 global_pressure <= -该值（与 consensus 公式一致）
+ENTRY_CROSS_PRESSURE_MIN_ALIGN = 0.0006
+# 有效交易所数量不足时：True=仍允许开仓（避免因网络丢数据完全停摆）
+ENTRY_CROSS_PRESSURE_FAIL_OPEN = True
+ENTRY_CROSS_MIN_EXCHANGES_OK = 4
+
 # 运行模式
 PAPER_MODE = True   # True=模拟，False=实盘
 SIMULATE_ONLY = True
