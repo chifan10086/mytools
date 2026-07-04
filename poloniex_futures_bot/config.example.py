@@ -137,7 +137,7 @@ PAPER_MODE = True   # True=模拟，False=实盘
 SIMULATE_ONLY = True
 INITIAL_EQUITY = 10000.0
 # 模拟全仓名义 = 权益×杠杆；保守默认 12x，远低於 30x 可显著降低单笔回撤
-LEVERAGE = 12
+LEVERAGE = 30
 
 # Telegram 通知（直接填写，不填则不发）
 TELEGRAM_BOT_TOKEN = ""
@@ -163,3 +163,40 @@ RECV_WINDOW_MS = 15000
 REQUEST_TIMEOUT = 30
 RATE_LIMIT_RETRY = 3
 RATE_LIMIT_BACKOFF = 2.0
+
+# ════════════════════════════════════════════════════
+# Decision Layer - 币圈新闻情绪决策层
+# 参考 https://github.com/PeymanKh/crypto_news_pipeline
+# ════════════════════════════════════════════════════
+
+# 总开关：True 启用新闻情绪决策层
+DECISION_LAYER_ENABLED = True
+
+# 新闻 API（cryptonews-api.com）
+# 注册获取 key: https://cryptonews-api.com
+DECISION_LAYER_NEWS_API_KEY = ""
+DECISION_LAYER_NEWS_URL = "https://cryptonews-api.com/api/v1/category?section=general&source=Bitcoin+Magazine,Bloomberg+Markets+and+Finance,Bloomberg+Technology,CNBC,Coindesk,CoinMarketCap,Crypto+Daily,Decrypt,Forbes,The+Block&items=10&page=1"
+
+# OpenAI API（用于情绪分析）
+DECISION_LAYER_OPENAI_API_KEY = ""
+DECISION_LAYER_OPENAI_MODEL = "gpt-4o-mini"  # gpt-4o-mini 兼顾成本与质量
+
+# 采集间隔（秒）：每 60 秒拉取一次新闻
+DECISION_LAYER_INTERVAL_SEC = 60
+
+# Telegram 推送：复用主 Bot 配置（TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID）
+# 仅推送重要性 >= 此等级的新闻（HIGH / MEDIUM / LOW）
+DECISION_LAYER_TELEGRAM_MIN_IMPORTANCE = "MEDIUM"
+
+# 缓存文件路径（防止重复分析同一新闻）
+DECISION_LAYER_CACHE_PATH = "logs/news_cache.json"
+
+# 入场门禁集成：
+# True 时，decision_layer 评分将作为 entry_gates 的额外过滤条件
+DECISION_LAYER_GATE_ENABLED = True
+# 做多时新闻情绪不得低于此值（-1~1），否则阻止开仓
+DECISION_LAYER_GATE_LONG_MIN_SCORE = -0.4
+# 做空时新闻情绪不得高于此值（-1~1），否则阻止开仓
+DECISION_LAYER_GATE_SHORT_MAX_SCORE = 0.4
+# 评分置信度低于此值时不生效（避免数据不足时误判）
+DECISION_LAYER_GATE_MIN_CONFIDENCE = 0.3

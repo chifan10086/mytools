@@ -1,5 +1,4 @@
-# 勿提交 API 密钥与本地配置（复制 config.example.py 为 config.py 后填写）
-config.py
+# 本地覆盖配置（config.py 已改为可提交）
 config_local.py
 .env
 *.key

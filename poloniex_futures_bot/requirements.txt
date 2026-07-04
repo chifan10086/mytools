@@ -6,5 +6,6 @@ pandas>=1.5.0
 technical>=1.5.2
 # 多交易所公开数据（consensus / decision_journal）
 ccxt>=4.0.0
-# 如需 requests 可取消下一行
-# requests>=2.28.0
+# Decision Layer 新闻情绪决策层
+requests>=2.28.0
+openai>=1.0.0

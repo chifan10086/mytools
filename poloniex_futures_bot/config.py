@@ -1,0 +1,175 @@
+# Poloniex BTC 永续合约机器人配置
+# 保守版：15m + composite（EMA+ATR+RSI）+ Freqtrade 双重确认
+
+# API（在 Poloniex 后台创建，需开通期货交易权限）
+API_KEY = ""
+API_SECRET = ""
+
+# 交易对与周期
+SYMBOL = "BTC_USDT_PERP"
+KLINE_INTERVAL = "MINUTE_15"
+KLINE_LIMIT = 120
+
+# 策略选择：auto | hf | ema_cross | macd | rsi | composite | consensus | mtf | freqtrade
+STRATEGY = "composite"
+FREQTRADE_CONFIRM = True
+
+# Freqtrade 风格参数
+FT_EMA_SHORT = 12
+FT_EMA_LONG = 26
+FT_MACD_FAST = 12
+FT_MACD_SLOW = 26
+FT_MACD_SIGNAL = 9
+FT_USE_MACD_FILTER = True
+FT_REQUIRE_HIST_MOMENTUM = True
+FT_RSI_PERIOD = 14
+FT_RSI_LONG_MAX = 64
+FT_RSI_SHORT_MIN = 36
+
+# 模拟手续费与资金费
+FUTURES_TAKER_FEE_RATE = 0.0005
+FUNDING_SETTLEMENT_SECONDS = 28800
+USE_API_FUNDING_RATE = True
+FUNDING_RATE_FALLBACK = 0.0
+
+# 每小时 Telegram 汇总（秒）
+HOURLY_REPORT_INTERVAL_SEC = 3600
+
+# 高频策略（hf）
+EMA_HF_FAST = 5
+EMA_HF_SLOW = 20
+
+# EMA 交叉策略
+EMA_FAST = 20
+EMA_SLOW = 60
+ATR_PERIOD = 14
+ATR_FILTER_MULT = 1.25
+
+# MACD 策略
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIGNAL = 9
+MACD_ATR_FILTER = True
+
+# RSI 策略 / 组合策略过滤
+RSI_PERIOD = 14
+RSI_OVERSOLD = 28
+RSI_OVERBOUGHT = 72
+RSI_NEUTRAL_LOW = 42
+RSI_NEUTRAL_HIGH = 58
+
+# 多交易所共识策略（consensus）
+CONSENSUS_EXCHANGES = ["binance", "bybit", "okx", "bitget", "gate", "htx", "kucoin", "mexc"]
+CONSENSUS_A = 1.0
+CONSENSUS_B = 0.5
+CONSENSUS_C = 100.0
+CONSENSUS_THRESHOLD_LONG = 0.35
+CONSENSUS_THRESHOLD_SHORT = -0.35
+CONSENSUS_MOMENTUM_MINUTES = 5
+
+# 多时间框架策略（mtf）
+MTF_HTF_INTERVAL = "MINUTE_15"
+MTF_HTF_LIMIT = 200
+MTF_LTF_INTERVAL = "MINUTE_5"
+MTF_LTF_LIMIT = 120
+MTF_HTF_EMA_FAST = 50
+MTF_HTF_EMA_SLOW = 200
+MTF_LTF_EMA_FAST = 9
+MTF_LTF_EMA_SLOW = 21
+MTF_RSI_PERIOD = 14
+MTF_RSI_LONG_MAX = 65
+MTF_RSI_SHORT_MIN = 35
+MTF_VOL_MA_PERIOD = 20
+MTF_VOL_MULT = 1.35
+MTF_ATR_SL_MULT = 2.0
+MTF_ATR_TP_MULT = 3.5
+
+# 自动策略（auto）
+AUTO_ADX_PERIOD = 14
+AUTO_ADX_TREND_THRESHOLD = 25
+AUTO_ADX_STRONG_TREND = 40
+AUTO_ATR_LOOKBACK = 50
+AUTO_ATR_HIGH_PERCENTILE = 75
+AUTO_RSI_EXTREME_LOW = 18
+AUTO_RSI_EXTREME_HIGH = 82
+AUTO_STRATEGY_STRONG_TREND = "mtf"
+AUTO_STRATEGY_TREND = "composite"
+AUTO_STRATEGY_RANGING = "composite"
+AUTO_STRATEGY_HIGH_VOLATILITY = "composite"
+AUTO_STRATEGY_EXTREME = "composite"
+
+# 止损止盈
+STOP_LOSS_RATIO = 0.004
+TAKE_PROFIT_RATIO = 0.008
+MAX_HOLD_CYCLES = 120
+
+# 仓位与风控
+POSITION_EQUITY_RATIO = 0.08
+MAX_CONSECUTIVE_LOSSES = 2
+DAILY_LOSS_RATIO = 0.04
+
+# 开仓门禁
+ENTRY_MIN_SIGNAL_QUALITY = 0.42
+ENTRY_MIN_SIGNAL_QUALITY_REVERSE = 0.52
+ENTRY_REQUIRE_CROSS_PRESSURE_ALIGN = True
+ENTRY_CROSS_PRESSURE_MIN_ALIGN = 0.0006
+ENTRY_CROSS_PRESSURE_FAIL_OPEN = True
+ENTRY_CROSS_MIN_EXCHANGES_OK = 4
+
+# 运行模式
+PAPER_MODE = True
+SIMULATE_ONLY = True
+INITIAL_EQUITY = 10000.0
+LEVERAGE = 30
+
+# ═══════════════════ 需要你填写的敏感配置 ═══════════════════
+
+# Telegram 通知（不填则不推送）
+TELEGRAM_BOT_TOKEN = ""        # TODO: 填入你的 Bot Token
+TELEGRAM_CHAT_ID = None        # TODO: 填入群组 ID，如 -1001234567890
+
+# Redis
+REDIS_URL = "redis://127.0.0.1:6379/0"
+
+# 决策日志
+DECISION_JOURNAL_ENABLED = True
+DECISION_JOURNAL_PATH = "logs/decision_journal.jsonl"
+DECISION_JOURNAL_EXCHANGES = ["binance", "bybit", "okx", "bitget", "gate", "htx", "kucoin", "mexc"]
+DECISION_JOURNAL_PARALLEL = True
+
+# 代理（国内访问 binance 等需要）
+CCXT_PROXY = ""                # 如 "http://127.0.0.1:7890"
+
+# 请求
+BASE_URL = "https://api.poloniex.com"
+RECV_WINDOW_MS = 15000
+REQUEST_TIMEOUT = 30
+RATE_LIMIT_RETRY = 3
+RATE_LIMIT_BACKOFF = 2.0
+
+# ═══════════════════ Decision Layer - 新闻情绪决策层 ═══════════════════
+
+DECISION_LAYER_ENABLED = True
+
+# 新闻 API（https://cryptonews-api.com 注册获取免费 key）
+DECISION_LAYER_NEWS_API_KEY = ""      # TODO: 填入 cryptonews-api.com 的 API Key
+DECISION_LAYER_NEWS_URL = "https://cryptonews-api.com/api/v1/category?section=general&source=Bitcoin+Magazine,Bloomberg+Markets+and+Finance,Bloomberg+Technology,CNBC,Coindesk,CoinMarketCap,Crypto+Daily,Decrypt,Forbes,The+Block&items=10&page=1"
+
+# OpenAI API（用于 LLM 情绪分析）
+DECISION_LAYER_OPENAI_API_KEY = ""    # TODO: 填入 OpenAI API Key
+DECISION_LAYER_OPENAI_MODEL = "gpt-4o-mini"
+
+# 采集间隔（秒）
+DECISION_LAYER_INTERVAL_SEC = 60
+
+# Telegram 新闻推送（复用上面的 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID）
+DECISION_LAYER_TELEGRAM_MIN_IMPORTANCE = "MEDIUM"  # HIGH / MEDIUM / LOW
+
+# 缓存
+DECISION_LAYER_CACHE_PATH = "logs/news_cache.json"
+
+# 入场门禁集成
+DECISION_LAYER_GATE_ENABLED = True
+DECISION_LAYER_GATE_LONG_MIN_SCORE = -0.4     # 做多时情绪不得低于此值
+DECISION_LAYER_GATE_SHORT_MAX_SCORE = 0.4     # 做空时情绪不得高于此值
+DECISION_LAYER_GATE_MIN_CONFIDENCE = 0.3      # 置信度低于此值时门禁不生效

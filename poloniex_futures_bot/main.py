@@ -25,6 +25,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
 )
+import config as _cfg
 import strategy
 from strategy import parse_klines, compute_signal, check_stop_loss_take_profit
 from risk_manager import RiskManager
@@ -145,7 +146,22 @@ def _get_market_state_summary(mark_price: float) -> str:
         rsi_val = rsi[-1] if rsi[-1] is not None else 50
         rsi_state = "超买" if rsi_val > 70 else "超卖" if rsi_val < 30 else "中性"
         
-        return f"趋势: {trend} | 波动: {volatility} ({atr_pct:.2f}%) | RSI: {rsi_val:.1f} ({rsi_state})"
+        summary = f"趋势: {trend} | 波动: {volatility} ({atr_pct:.2f}%) | RSI: {rsi_val:.1f} ({rsi_state})"
+
+        # Decision Layer 情绪评分
+        try:
+            from decision_layer.scorer import get_current_score
+            dl = get_current_score()
+            if not dl.stale and dl.last_update_ts > 0:
+                bias_cn = {1: "偏多📈", -1: "偏空📉", 0: "中性➡️"}.get(dl.direction_bias, "中性")
+                summary += (
+                    f"\n新闻情绪: {dl.score:+.3f} ({bias_cn}) "
+                    f"[多{dl.bullish_count}/空{dl.bearish_count}/中{dl.neutral_count}]"
+                )
+        except ImportError:
+            pass
+        
+        return summary
     except Exception as e:
         return f"获取失败: {str(e)}"
 
@@ -420,6 +436,44 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
         append_cycle_journal(jm, risk)
 
 
+def _init_decision_layer() -> Optional[Any]:
+    """初始化 Decision Layer 后台运行器。"""
+    enabled = getattr(_cfg, "DECISION_LAYER_ENABLED", False)
+    if not enabled:
+        return None
+
+    try:
+        from decision_layer.runner import DecisionLayerRunner
+        from notify import send_telegram
+
+        news_api_key = getattr(_cfg, "DECISION_LAYER_NEWS_API_KEY", "")
+        news_api_url = getattr(_cfg, "DECISION_LAYER_NEWS_URL", "")
+        openai_key = getattr(_cfg, "DECISION_LAYER_OPENAI_API_KEY", "")
+        openai_model = getattr(_cfg, "DECISION_LAYER_OPENAI_MODEL", "gpt-4o-mini")
+        interval = int(getattr(_cfg, "DECISION_LAYER_INTERVAL_SEC", 60))
+        min_imp = getattr(_cfg, "DECISION_LAYER_TELEGRAM_MIN_IMPORTANCE", "MEDIUM")
+        cache_path = getattr(_cfg, "DECISION_LAYER_CACHE_PATH", "")
+
+        tg_fn = send_telegram if _telegram_enabled() else None
+
+        runner = DecisionLayerRunner(
+            news_api_key=news_api_key,
+            news_api_url=news_api_url,
+            openai_api_key=openai_key,
+            openai_model=openai_model,
+            interval_sec=interval,
+            telegram_send_fn=tg_fn,
+            telegram_min_importance=min_imp,
+            cache_path=cache_path,
+            enabled=True,
+        )
+        runner.start()
+        return runner
+    except Exception as e:
+        logger.error("Decision Layer 初始化失败: %s", e)
+        return None
+
+
 def main() -> None:
     paper = (
         PaperEngine(
@@ -441,6 +495,9 @@ def main() -> None:
             FUTURES_TAKER_FEE_RATE,
             USE_API_FUNDING_RATE,
         )
+
+    # 启动 Decision Layer（新闻情绪决策层）
+    dl_runner = _init_decision_layer()
 
     interval_sec = 60  # 每分钟轮询一次
     while True:

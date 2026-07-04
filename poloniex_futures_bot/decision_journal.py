@@ -191,6 +191,26 @@ def append_cycle_journal(jm: Dict[str, Any], risk: Any) -> None:
             record["position_scale"] = jm["position_scale"]
         if "funding_rate" in jm:
             record["funding_rate_used"] = jm["funding_rate"]
+        if "entry_gate_reason" in jm:
+            record["entry_gate_reason"] = jm["entry_gate_reason"]
+
+        # Decision Layer 情绪评分快照
+        try:
+            from decision_layer.scorer import get_current_score
+            dl_score = get_current_score()
+            if dl_score.last_update_ts > 0:
+                record["decision_layer"] = {
+                    "score": round(dl_score.score, 4),
+                    "confidence": round(dl_score.confidence, 3),
+                    "bullish": dl_score.bullish_count,
+                    "bearish": dl_score.bearish_count,
+                    "neutral": dl_score.neutral_count,
+                    "high_impact": dl_score.high_impact_count,
+                    "stale": dl_score.stale,
+                    "direction_bias": dl_score.direction_bias,
+                }
+        except ImportError:
+            pass
 
         o = jm.get("o")
         h = jm.get("h")
