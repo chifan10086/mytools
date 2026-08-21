@@ -19,11 +19,12 @@ _TIMEOUT_MS = 10_000
 _SYMBOL = "BTC/USDT:USDT"
 
 # 别名 → ccxt 类名（永续合约需要特定子类的交易所）
+# gate：ccxt 现用 gate；4.5 中后期已移除 gateio 别名，旧版再回退
 _ALIAS: Dict[str, str] = {
     "binance": "binanceusdm",
     "huobi": "htx",
     "kucoin": "kucoinfutures",
-    "gate": "gateio",
+    "gateio": "gate",
 }
 
 _exchange_cache: Dict[tuple, ccxt.Exchange] = {}
@@ -49,6 +50,8 @@ def _get_exchange(name: str) -> Optional[ccxt.Exchange]:
     if cache_key in _exchange_cache:
         return _exchange_cache[cache_key]
     cls = getattr(ccxt, ccxt_id, None)
+    if cls is None and ccxt_id == "gate":
+        cls = getattr(ccxt, "gateio", None)
     if cls is None:
         logger.warning("ccxt 不支持交易所: %s (ccxt_id=%s)", name, ccxt_id)
         return None
