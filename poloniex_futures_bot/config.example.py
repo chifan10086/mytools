@@ -3,8 +3,7 @@
 # cp config.example.py config.py
 #
 # ---------- 保守版（减频、降杠杆、改善盈亏比）----------
-# 默认：15m + composite（EMA+ATR+RSI）+ 与 Freqtrade 侧双重确认；避免 1m/hf/auto 频繁换手被手续费与假突破打穿。
-# 若仍偏激进，可把 FREQTRADE_CONFIRM=False（不推荐）或再把 ATR_FILTER_MULT 调到 1.4+。
+# 默认：5m + composite（EMA 定方向 + 短周期动量）+ 盘口挂单失衡确认 + Freqtrade EMA/MACD 同向。
 
 # API（在 Poloniex 后台创建，需开通期货交易权限）
 API_KEY = ""
@@ -12,9 +11,8 @@ API_SECRET = ""
 
 # 交易对与周期
 SYMBOL = "BTC_USDT_PERP"
-# 保守：15 分钟 K 线，显著少于 1 分钟上的噪音信号
-KLINE_INTERVAL = "MINUTE_15"
-KLINE_LIMIT = 120
+KLINE_INTERVAL = "MINUTE_5"
+KLINE_LIMIT = 200
 
 # 策略选择：auto | hf | ema_cross | macd | rsi | composite | consensus | mtf | freqtrade（technical/qtpylib）
 # 保守默认 composite；auto 会在不同市况切换子策略（见文末 AUTO_* 映射，已改为偏稳健）
@@ -67,6 +65,12 @@ RSI_OVERSOLD = 28       # 略收紧，减少「接飞刀」
 RSI_OVERBOUGHT = 72
 RSI_NEUTRAL_LOW = 42    # composite：做空时若 RSI<此（超卖）不追空
 RSI_NEUTRAL_HIGH = 58   # composite：做多时若 RSI>此（偏高）不追多
+
+# 组合短线：EMA 定方向后，用近 N 根动量入场（不再死等金叉）
+COMPOSITE_ALLOW_TREND_FOLLOW = True
+MOMENTUM_BARS = 3
+MOMENTUM_MIN_RATIO = 0.002
+MOMENTUM_LOOKBACK_BARS = 6
 
 # 多交易所共识策略（consensus）：pressure = a*momentum + b*OI_change - c*funding_rate
 # 成交额仅作权重；global_pressure = Σ(volume_weight_i × pressure_i)
@@ -136,6 +140,11 @@ ENTRY_CROSS_PRESSURE_MIN_ALIGN = 0.0006
 # 有效交易所数量不足时：True=仍允许开仓（避免因网络丢数据完全停摆）
 ENTRY_CROSS_PRESSURE_FAIL_OPEN = True
 ENTRY_CROSS_MIN_EXCHANGES_OK = 4
+ENTRY_REQUIRE_BOOK_ALIGN = True
+ENTRY_BOOK_EXCHANGES = ["binance", "coinbase"]
+ENTRY_BOOK_LIMIT = 20
+ENTRY_BOOK_MIN_IMBALANCE = 0.08
+ENTRY_BOOK_FAIL_OPEN = True
 
 # 运行模式
 PAPER_MODE = True   # True=模拟，False=实盘

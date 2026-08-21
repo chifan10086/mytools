@@ -26,8 +26,10 @@ from config import (
     RSI_PERIOD,
     RSI_OVERSOLD,
     RSI_OVERBOUGHT,
-    RSI_NEUTRAL_LOW,
-    RSI_NEUTRAL_HIGH,
+    COMPOSITE_ALLOW_TREND_FOLLOW,
+    MOMENTUM_BARS,
+    MOMENTUM_MIN_RATIO,
+    MOMENTUM_LOOKBACK_BARS,
     CONSENSUS_EXCHANGES,
     CONSENSUS_A,
     CONSENSUS_B,
@@ -63,7 +65,7 @@ from config import (
     AUTO_STRATEGY_HIGH_VOLATILITY,
     AUTO_STRATEGY_EXTREME,
 )
-from freqtrade_advisory import compute_freqtrade_signal
+from freqtrade_advisory import compute_freqtrade_signal, freqtrade_trend_align
 
 
 def _ema(series: List[float], period: int) -> List[float]:
@@ -463,27 +465,73 @@ def _compute_mtf(
         return -1, sl, tp, "\n".join(lines)
 
 
-# ---------- 组合：EMA 趋势 + RSI 过滤（避免超买追多、超卖追空）----------
+# ---------- 组合：EMA 趋势方向 + 短周期动量（交叉仍有效；顺势不再死等金叉）----------
 def _compute_composite(
     highs: List[float],
     lows: List[float],
     closes: List[float],
 ) -> Tuple[int, Optional[float], Optional[float], str]:
-    direction, sl, tp, base_r = _compute_ema_cross(highs, lows, closes)
-    if direction == 0:
-        return 0, None, None, base_r
     n = len(closes)
-    if n < RSI_PERIOD + 1:
-        return direction, sl, tp, base_r
+    need = max(EMA_SLOW + 2, RSI_PERIOD + 1, MOMENTUM_BARS + 2, MOMENTUM_LOOKBACK_BARS + 1)
+    if n < need:
+        return 0, None, None, f"【组合】K线不足(需≥{need})"
+
+    ema_f = _ema(closes, EMA_FAST)
+    ema_s = _ema(closes, EMA_SLOW)
+    i = n - 1
+    price = closes[i]
+    trend = 1 if ema_f[i] > ema_s[i] else -1 if ema_f[i] < ema_s[i] else 0
+    cross_up = ema_f[i] > ema_s[i] and ema_f[i - 1] <= ema_s[i - 1]
+    cross_dn = ema_f[i] < ema_s[i] and ema_f[i - 1] >= ema_s[i - 1]
+
+    bars = max(1, int(MOMENTUM_BARS))
+    look = max(2, int(MOMENTUM_LOOKBACK_BARS))
+    th = float(MOMENTUM_MIN_RATIO)
+    old = closes[i - bars]
+    old_prev = closes[i - 1 - bars]
+    mom = (price - old) / old if old > 0 else 0.0
+    mom_prev = (closes[i - 1] - old_prev) / old_prev if old_prev > 0 else 0.0
+    window_h = highs[i - look : i]
+    window_l = lows[i - look : i]
+    broke_high = bool(window_h) and price >= max(window_h)
+    broke_low = bool(window_l) and price <= min(window_l)
+    impulse_long = mom >= th and (mom_prev < th or broke_high)
+    impulse_short = mom <= -th and (mom_prev > -th or broke_low)
+
     rsi_series = _rsi(closes, RSI_PERIOD)
-    r = rsi_series[n - 1]
-    if r is None:
-        return direction, sl, tp, base_r
-    if direction == 1 and r > RSI_NEUTRAL_HIGH:
-        return 0, None, None, base_r + f"\n【组合过滤】RSI={r:.1f}>{RSI_NEUTRAL_HIGH} 不追多"
-    if direction == -1 and r < RSI_NEUTRAL_LOW:
-        return 0, None, None, base_r + f"\n【组合过滤】RSI={r:.1f}<{RSI_NEUTRAL_LOW} 不追空"
-    return direction, sl, tp, base_r + f"\n【组合】RSI={r:.1f} 通过"
+    r = rsi_series[i]
+    snap = (
+        f"【组合·短线】收盘={price:.2f} EMA{EMA_FAST}={ema_f[i]:.2f} EMA{EMA_SLOW}={ema_s[i]:.2f} "
+        f"趋势={'多' if trend == 1 else '空' if trend == -1 else '无'} "
+        f"动量{bars}根={mom:.4f} RSI={r:.1f}" if r is not None else
+        f"【组合·短线】收盘={price:.2f} 趋势={trend} 动量={mom:.4f} RSI=N/A"
+    )
+
+    if cross_up:
+        if r is not None and r > RSI_OVERBOUGHT:
+            return 0, None, None, snap + f" → 金叉但 RSI>{RSI_OVERBOUGHT}"
+        sl, tp = _sl_tp_long(price)
+        return 1, sl, tp, snap + " → 金叉做多"
+    if cross_dn:
+        if r is not None and r < RSI_OVERSOLD:
+            return 0, None, None, snap + f" → 死叉但 RSI<{RSI_OVERSOLD}"
+        sl, tp = _sl_tp_short(price)
+        return -1, sl, tp, snap + " → 死叉做空"
+
+    if not COMPOSITE_ALLOW_TREND_FOLLOW or trend == 0:
+        return 0, None, None, snap + " → 无交叉"
+
+    if trend == 1 and impulse_long:
+        if r is not None and r > RSI_OVERBOUGHT:
+            return 0, None, None, snap + f" → 顺势动量但 RSI>{RSI_OVERBOUGHT} 不追多"
+        sl, tp = _sl_tp_long(price)
+        return 1, sl, tp, snap + " → 顺势动量做多"
+    if trend == -1 and impulse_short:
+        if r is not None and r < RSI_OVERSOLD:
+            return 0, None, None, snap + f" → 顺势动量但 RSI<{RSI_OVERSOLD} 不追空"
+        sl, tp = _sl_tp_short(price)
+        return -1, sl, tp, snap + " → 顺势动量做空"
+    return 0, None, None, snap + " → 无新动量"
 
 
 # ---------- 自动策略选择 auto：实时市场分类 → 自动分发最佳子策略 ----------
@@ -824,7 +872,8 @@ def compute_signal(
         )
 
     if FREQTRADE_CONFIRM:
-        fd, fsl, ftp, fr = compute_freqtrade_signal(opens, highs, lows, closes)
+        fd, fr = freqtrade_trend_align(opens, highs, lows, closes)
+        fsl = ftp = None
         if bd in (1, -1) and fd != bd:
             return (
                 0,

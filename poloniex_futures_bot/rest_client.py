@@ -124,6 +124,48 @@ def get_market_funding_rate(symbol: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def get_order_book(symbol: str, limit: int = 20) -> Dict[str, Any]:
+    """公开订单簿。data 含 asks/bids，每档 [price, qty]。"""
+    r = _request("GET", "/v3/market/orderBook", params={"symbol": symbol, "limit": limit}, signed=False)
+    data = r.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def snapshot_order_book(symbol: str, limit: int = 20) -> Optional[Dict[str, Any]]:
+    """买卖挂单合计与失衡度 imbalance = (bid-ask)/(bid+ask)，多头为正。"""
+    try:
+        data = get_order_book(symbol, limit=limit)
+    except Exception:
+        return None
+    if not data:
+        return None
+    bids = data.get("bids") or []
+    asks = data.get("asks") or []
+
+    def _sz(levels: Any) -> float:
+        total = 0.0
+        if not isinstance(levels, list):
+            return 0.0
+        for lv in levels:
+            if isinstance(lv, (list, tuple)) and len(lv) >= 2:
+                try:
+                    total += float(lv[1])
+                except (TypeError, ValueError):
+                    pass
+        return total
+
+    bid_sz = _sz(bids)
+    ask_sz = _sz(asks)
+    tot = bid_sz + ask_sz
+    imb = (bid_sz - ask_sz) / tot if tot > 0 else 0.0
+    return {
+        "bid_sz": round(bid_sz, 6),
+        "ask_sz": round(ask_sz, 6),
+        "imbalance": round(imb, 6),
+        "levels": min(len(bids), len(asks)) if isinstance(bids, list) and isinstance(asks, list) else 0,
+    }
+
+
 def get_klines(symbol: str, interval: str, limit: int = 100, s_time: Optional[int] = None, e_time: Optional[int] = None) -> List[List]:
     """获取 K 线。返回 list of [l, h, o, c, amt, qty, tC, sT, cT]。"""
     params = {"symbol": symbol, "interval": interval, "limit": limit}

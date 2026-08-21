@@ -44,6 +44,7 @@ from exchange import (
 )
 from notify import notify_trade, notify_close, save_equity_redis, notify_hourly_pnl_report
 from rest_client import get_market_funding_rate
+from multi_exchange import snapshot_major_order_books
 from decision_journal import append_cycle_journal, prefetch_cross_exchange_for_cycle
 from entry_gates import passes_entry_gates, will_open_or_reverse
 from trade_journal import TradeRecorder
@@ -193,6 +194,7 @@ def _entry_context(
         "position_scale": position_scale,
         "global_pressure": cx.get("global_pressure"),
         "exchanges_ok": len(cx.get("exchanges_ok") or []),
+        "book_imbalance": (jm.get("order_book") or {}).get("imbalance"),
         "stop_loss_ratio": STOP_LOSS_RATIO,
         "take_profit_ratio": TAKE_PROFIT_RATIO,
     }
@@ -265,6 +267,9 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
         )
 
         prefetch_cross_exchange_for_cycle(mark_price, jm)
+        book_limit = int(getattr(_cfg, "ENTRY_BOOK_LIMIT", 20) or 20)
+        book_exs = getattr(_cfg, "ENTRY_BOOK_EXCHANGES", None) or ["binance", "coinbase"]
+        jm["order_book"] = snapshot_major_order_books(book_exs, limit=book_limit)
 
         _maybe_hourly_report(paper, equity, mark_price, pos_side, pos_size, entry_price, risk)
 
@@ -353,7 +358,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
 
         if will_open_or_reverse(direction, pos_side):
             ok_gate, gate_reason = passes_entry_gates(
-                direction, signal_quality, pos_side, jm.get("cross_exchange")
+                direction, signal_quality, pos_side, jm.get("cross_exchange"), jm.get("order_book")
             )
             if not ok_gate:
                 jm["entry_gate_reason"] = gate_reason

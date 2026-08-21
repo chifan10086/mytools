@@ -62,11 +62,21 @@ def get_equity_and_position(paper: Optional[PaperEngine], mark_price: float) -> 
 
 def fetch_klines() -> List[List]:
     from config import KLINE_INTERVAL, KLINE_LIMIT
+    from multi_exchange import fetch_binance_klines
+
+    rows = fetch_binance_klines(KLINE_INTERVAL, KLINE_LIMIT)
+    if rows:
+        return rows
     return get_klines(SYMBOL, KLINE_INTERVAL, limit=KLINE_LIMIT)
 
 
 def fetch_klines_mtf(interval: str, limit: int) -> List[List]:
-    """获取指定周期的 K 线，供多时间框架策略使用。"""
+    """获取指定周期的 K 线，供多时间框架策略使用。优先币安。"""
+    from multi_exchange import fetch_binance_klines
+
+    rows = fetch_binance_klines(interval, limit)
+    if rows:
+        return rows
     return get_klines(SYMBOL, interval, limit=limit)
 
 

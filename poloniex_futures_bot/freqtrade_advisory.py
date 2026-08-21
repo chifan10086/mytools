@@ -122,6 +122,35 @@ def compute_freqtrade_signal(
     return 0, None, None, "\n".join(lines)
 
 
+def freqtrade_trend_align(
+    opens: List[float],
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+) -> Tuple[int, str]:
+    """
+    短线确认：不要求刚交叉，只要 EMA 方向与 MACD 柱同向。
+    返回 (direction, 说明)。1=偏多, -1=偏空, 0=不一致。
+    """
+    n = len(closes)
+    need = max(FT_EMA_LONG + 2, FT_MACD_SLOW + FT_MACD_SIGNAL + 2)
+    if n < need:
+        return 0, f"【Freqtrade同向】K线不足(需≥{need}根，当前{n})"
+    if qtpylib is None:
+        return 0, "【Freqtrade同向】未安装 technical 库"
+    df = pd.DataFrame({"close": closes})
+    ema_f = float(df["close"].ewm(span=FT_EMA_SHORT, adjust=False).mean().iloc[-1])
+    ema_s = float(df["close"].ewm(span=FT_EMA_LONG, adjust=False).mean().iloc[-1])
+    macd_df = qtpylib.macd(df["close"], fast=FT_MACD_FAST, slow=FT_MACD_SLOW, smooth=FT_MACD_SIGNAL)
+    hist = float(macd_df["histogram"].iloc[-1])
+    ema_dir = 1 if ema_f > ema_s else -1 if ema_f < ema_s else 0
+    macd_dir = 1 if hist > 0 else -1 if hist < 0 else 0
+    snap = f"【Freqtrade同向】EMA{FT_EMA_SHORT}={ema_f:.2f} EMA{FT_EMA_LONG}={ema_s:.2f} MACD柱={hist:.4f}"
+    if ema_dir != 0 and ema_dir == macd_dir:
+        return ema_dir, snap + (" → 偏多" if ema_dir == 1 else " → 偏空")
+    return 0, snap + " → EMA/MACD 未同向"
+
+
 def freqtrade_direction_only(
     opens: List[float],
     highs: List[float],

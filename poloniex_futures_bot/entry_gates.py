@@ -71,11 +71,27 @@ def _check_decision_layer_gate(direction: int) -> Tuple[bool, str]:
     return True, ""
 
 
+def _check_book_gate(direction: int, order_book: Optional[Dict[str, Any]]) -> Tuple[bool, str]:
+    if not _b("ENTRY_REQUIRE_BOOK_ALIGN", False):
+        return True, ""
+    fail_open = _b("ENTRY_BOOK_FAIL_OPEN", True)
+    min_imb = _f("ENTRY_BOOK_MIN_IMBALANCE", 0.08)
+    if not isinstance(order_book, dict) or order_book.get("imbalance") is None:
+        return (True, "") if fail_open else (False, "order_book_missing")
+    imb = float(order_book["imbalance"])
+    if direction == 1 and imb < min_imb:
+        return False, f"盘口偏空 imbalance={imb:.3f} < {min_imb:.3f}"
+    if direction == -1 and imb > -min_imb:
+        return False, f"盘口偏多 imbalance={imb:.3f} > {-min_imb:.3f}"
+    return True, ""
+
+
 def passes_entry_gates(
     direction: int,
     signal_quality: Optional[float],
     pos_side: Optional[str],
     cross_exchange: Optional[Dict[str, Any]],
+    order_book: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, str]:
     """
     direction: -1 做空 / 1 做多 / 0 无信号
@@ -102,6 +118,10 @@ def passes_entry_gates(
     dl_ok, dl_reason = _check_decision_layer_gate(direction)
     if not dl_ok:
         return False, dl_reason
+
+    book_ok, book_reason = _check_book_gate(direction, order_book)
+    if not book_ok:
+        return False, book_reason
 
     if not _b("ENTRY_REQUIRE_CROSS_PRESSURE_ALIGN", False):
         return True, ""

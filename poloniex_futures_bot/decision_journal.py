@@ -259,6 +259,8 @@ def append_cycle_journal(jm: Dict[str, Any], risk: Any) -> None:
             record["funding_rate_used"] = jm["funding_rate"]
         if "entry_gate_reason" in jm:
             record["entry_gate_reason"] = jm["entry_gate_reason"]
+        if isinstance(jm.get("order_book"), dict):
+            record["order_book"] = jm["order_book"]
 
         # Decision Layer 情绪评分快照
         try:

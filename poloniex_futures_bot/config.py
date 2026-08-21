@@ -1,5 +1,5 @@
 # Poloniex BTC 永续合约机器人配置
-# 保守版：15m + composite（EMA+ATR+RSI）+ Freqtrade 双重确认
+# 合约短线：5m + composite（EMA方向 + 近3根动量）+ 盘口确认 + Freqtrade 同向
 
 # API（在 Poloniex 后台创建，需开通期货交易权限）
 API_KEY = ""
@@ -7,8 +7,8 @@ API_SECRET = ""
 
 # 交易对与周期
 SYMBOL = "BTC_USDT_PERP"
-KLINE_INTERVAL = "MINUTE_15"
-KLINE_LIMIT = 120
+KLINE_INTERVAL = "MINUTE_5"
+KLINE_LIMIT = 200
 
 # 策略选择：auto | hf | ema_cross | macd | rsi | composite | consensus | mtf | freqtrade
 STRATEGY = "composite"
@@ -57,6 +57,12 @@ RSI_OVERSOLD = 28
 RSI_OVERBOUGHT = 72
 RSI_NEUTRAL_LOW = 42
 RSI_NEUTRAL_HIGH = 58
+
+# 组合短线：EMA 定方向后，用近 N 根动量入场（不再死等金叉）
+COMPOSITE_ALLOW_TREND_FOLLOW = True
+MOMENTUM_BARS = 3
+MOMENTUM_MIN_RATIO = 0.002
+MOMENTUM_LOOKBACK_BARS = 6
 
 # 多交易所共识策略（consensus）
 CONSENSUS_EXCHANGES = ["binance", "bybit", "okx", "bitget", "gate", "htx", "kucoin", "mexc"]
@@ -120,6 +126,12 @@ ENTRY_REQUIRE_CROSS_PRESSURE_ALIGN = True
 ENTRY_CROSS_PRESSURE_MIN_ALIGN = 0.0006
 ENTRY_CROSS_PRESSURE_FAIL_OPEN = True
 ENTRY_CROSS_MIN_EXCHANGES_OK = 4
+# 盘口挂单失衡：用币安/Coinbase，不用 Poloniex。各所 imbalance 等权平均
+ENTRY_REQUIRE_BOOK_ALIGN = True
+ENTRY_BOOK_EXCHANGES = ["binance", "coinbase"]
+ENTRY_BOOK_LIMIT = 20
+ENTRY_BOOK_MIN_IMBALANCE = 0.08
+ENTRY_BOOK_FAIL_OPEN = True
 
 # 运行模式
 PAPER_MODE = True

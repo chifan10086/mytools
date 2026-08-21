@@ -4,6 +4,7 @@
 仅用公开 API，无需鉴权；用于 consensus 策略的 pressure 与 volume 权重。
 
 支持交易所：binance, bybit, okx, bitget, gate, htx, kucoin, mexc
+盘口深度走币安 / Coinbase（现货），不用 Poloniex。
 在 config 的 CONSENSUS_EXCHANGES / DECISION_JOURNAL_EXCHANGES 里填别名即可。
 国内等网络环境若 binance/bybit 等超时，可在 config 设置 CCXT_PROXY（http/https/socks5 URL）。
 """
@@ -28,6 +29,14 @@ _ALIAS: Dict[str, str] = {
 }
 
 _exchange_cache: Dict[tuple, ccxt.Exchange] = {}
+
+# 盘口：大所深度，不用 Poloniex。coinbase 为现货，不能走 swap 默认。
+_BOOK_VENUES: Dict[str, Dict[str, Any]] = {
+    "binance": {"ccxt_id": "binanceusdm", "symbol": "BTC/USDT:USDT", "default_type": "swap"},
+    "coinbase": {"ccxt_id": "coinbase", "symbol": "BTC/USD", "default_type": "spot"},
+    "bybit": {"ccxt_id": "bybit", "symbol": "BTC/USDT:USDT", "default_type": "swap"},
+}
+_book_cache: Dict[tuple, ccxt.Exchange] = {}
 
 
 def _get_proxy() -> Optional[str]:
@@ -169,6 +178,163 @@ def fetch_exchanges(
             row = _fetch_one(eid, momentum_minutes)
             if row:
                 out.append(row)
+    return out
+
+
+def _get_book_exchange(name: str) -> Optional[ccxt.Exchange]:
+    spec = _BOOK_VENUES.get(name)
+    if spec is None:
+        return None
+    proxy = _get_proxy()
+    cache_key = (spec["ccxt_id"], spec["default_type"], proxy or "")
+    if cache_key in _book_cache:
+        return _book_cache[cache_key]
+    cls = getattr(ccxt, spec["ccxt_id"], None)
+    if cls is None:
+        logger.warning("ccxt 不支持盘口交易所: %s", spec["ccxt_id"])
+        return None
+    opts: Dict[str, Any] = {
+        "enableRateLimit": True,
+        "timeout": _TIMEOUT_MS,
+        "options": {"defaultType": spec["default_type"]},
+    }
+    if proxy:
+        if proxy.lower().startswith("socks"):
+            opts["socksProxy"] = proxy
+        elif proxy.lower().startswith("http"):
+            opts["httpProxy"] = proxy
+            opts["httpsProxy"] = proxy
+    ex = cls(opts)
+    _book_cache[cache_key] = ex
+    return ex
+
+
+def _book_imbalance(levels_bid: Any, levels_ask: Any) -> Optional[Dict[str, Any]]:
+    def _sz(levels: Any) -> float:
+        total = 0.0
+        if not isinstance(levels, list):
+            return 0.0
+        for lv in levels:
+            if isinstance(lv, (list, tuple)) and len(lv) >= 2:
+                try:
+                    total += float(lv[1])
+                except (TypeError, ValueError):
+                    pass
+        return total
+
+    bid_sz = _sz(levels_bid)
+    ask_sz = _sz(levels_ask)
+    tot = bid_sz + ask_sz
+    if tot <= 0:
+        return None
+    return {
+        "bid_sz": round(bid_sz, 6),
+        "ask_sz": round(ask_sz, 6),
+        "imbalance": round((bid_sz - ask_sz) / tot, 6),
+    }
+
+
+def _fetch_one_book(name: str, limit: int) -> Optional[Dict[str, Any]]:
+    spec = _BOOK_VENUES.get(name)
+    ex = _get_book_exchange(name)
+    if spec is None or ex is None:
+        return None
+    symbols = [spec["symbol"]]
+    if name == "coinbase":
+        symbols = ["BTC/USD", "BTC/USDT"]
+    book = None
+    used = spec["symbol"]
+    last_err: Optional[Exception] = None
+    for sym in symbols:
+        try:
+            book = ex.fetch_order_book(sym, limit)
+            used = sym
+            break
+        except Exception as e:
+            last_err = e
+            book = None
+    if book is None:
+        logger.debug("fetch_order_book %s 失败: %s", name, last_err)
+        return None
+    row = _book_imbalance(book.get("bids"), book.get("asks"))
+    if row is None:
+        return None
+    row["exchange"] = name
+    row["symbol"] = used
+    return row
+
+
+def snapshot_major_order_books(
+    exchange_ids: Optional[List[str]] = None,
+    limit: int = 20,
+) -> Optional[Dict[str, Any]]:
+    """
+    币安 / Coinbase 等大所盘口失衡。各所先算无量纲 imbalance，再等权平均
+    （不能把合约张数和现货 BTC 加在一起）。
+    """
+    ids = exchange_ids or ["binance", "coinbase"]
+    ids = [(e or "").strip().lower() for e in ids]
+    ids = [e for e in ids if e in _BOOK_VENUES]
+    if not ids:
+        return None
+    venues: List[Dict[str, Any]] = []
+    if len(ids) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(ids))) as pool:
+            futs = {pool.submit(_fetch_one_book, eid, limit): eid for eid in ids}
+            for fut in as_completed(futs):
+                try:
+                    row = fut.result()
+                    if row:
+                        venues.append(row)
+                except Exception:
+                    pass
+        venues.sort(key=lambda r: r.get("exchange", ""))
+    else:
+        row = _fetch_one_book(ids[0], limit)
+        if row:
+            venues.append(row)
+    if not venues:
+        logger.warning("大所盘口全部失败: %s", ids)
+        return None
+    imb = sum(float(v["imbalance"]) for v in venues) / len(venues)
+    return {
+        "imbalance": round(imb, 6),
+        "venues_ok": [v["exchange"] for v in venues],
+        "venues": venues,
+        "levels": limit,
+    }
+
+
+_INTERVAL_TO_TF = {
+    "MINUTE_1": "1m",
+    "MINUTE_5": "5m",
+    "MINUTE_15": "15m",
+    "MINUTE_30": "30m",
+    "HOUR_1": "1h",
+    "HOUR_4": "4h",
+}
+
+
+def fetch_binance_klines(interval: str, limit: int) -> List[List]:
+    """币安 U 本位永续 K 线，转成 Poloniex 的 [l,h,o,c,amt,qty,tC,sT,cT]。"""
+    ex = _get_book_exchange("binance")
+    if ex is None:
+        return []
+    tf = _INTERVAL_TO_TF.get((interval or "").strip().upper(), "5m")
+    try:
+        raw = ex.fetch_ohlcv(_SYMBOL, timeframe=tf, limit=limit)
+    except Exception as e:
+        logger.warning("binance K 线失败: %s", e)
+        return []
+    out: List[List] = []
+    for row in raw or []:
+        if not row or len(row) < 6:
+            continue
+        ts, o, h, l, c, vol = row[:6]
+        ts_i = int(ts)
+        o, h, l, c, vol = float(o), float(h), float(l), float(c), float(vol)
+        amt = vol * c if c > 0 else 0.0
+        out.append([l, h, o, c, amt, vol, 0, ts_i, ts_i])
     return out
 
 
