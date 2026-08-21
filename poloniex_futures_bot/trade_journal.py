@@ -27,10 +27,34 @@ def _path() -> str:
     return str(getattr(_cfg, "TRADE_JOURNAL_PATH", "logs/trades.jsonl") or "logs/trades.jsonl")
 
 
-def _append(record: Dict[str, Any]) -> None:
-    path = _path()
+def _abs_path() -> str:
+    return os.path.abspath(_path())
+
+
+def _ensure_file() -> Optional[str]:
+    """启动时创建空文件，避免「还没平仓所以看不到 logs/trades.jsonl」。"""
+    if not _enabled():
+        return None
+    path = _abs_path()
     try:
-        parent = os.path.dirname(os.path.abspath(path))
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        if not os.path.exists(path):
+            with open(path, "a", encoding="utf-8"):
+                pass
+        return path
+    except Exception as e:
+        logger.warning("交易日志无法创建 %s: %s", path, e)
+        return None
+
+
+def _append(record: Dict[str, Any]) -> None:
+    if not _enabled():
+        return
+    path = _abs_path()
+    try:
+        parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
         with open(path, "a", encoding="utf-8") as f:
@@ -40,7 +64,7 @@ def _append(record: Dict[str, Any]) -> None:
 
 
 class TradeRecorder:
-    """open_trade() 记录入场上下文 → update() 每轮刷新浮动极值 → close_trade() 落盘。"""
+    """open_trade() 写开仓行 → update() 每轮刷新浮动极值 → close_trade() 写平仓行。"""
 
     def __init__(self) -> None:
         self._entry: Optional[Dict[str, Any]] = None
@@ -50,6 +74,9 @@ class TradeRecorder:
         self._fees_at_entry: float = 0.0
         self._funding_at_entry: float = 0.0
         self._seq: int = 0
+        path = _ensure_file()
+        if path:
+            logger.info("交易日志: %s（开仓/平仓各写一行；未成交则为空文件）", path)
 
     def open_trade(
         self,
@@ -88,6 +115,7 @@ class TradeRecorder:
         self._samples = 1
         self._fees_at_entry = fees_paid
         self._funding_at_entry = funding_cashflow
+        _append({**entry, "status": "open"})
 
     def update(self, price: float) -> None:
         """主循环每轮调用；仅在持仓期间累积浮动极值。"""
@@ -108,7 +136,7 @@ class TradeRecorder:
     ) -> None:
         entry = self._entry
         self._entry = None
-        if entry is None or not _enabled():
+        if entry is None:
             return
 
         now = time.time()
@@ -140,6 +168,7 @@ class TradeRecorder:
                 "mfe_ratio": round(mfe, 8),
                 "mae_ratio": round(mae, 8),
                 "excursion_samples": self._samples,
+                "status": "closed",
             }
         )
         _append(record)
