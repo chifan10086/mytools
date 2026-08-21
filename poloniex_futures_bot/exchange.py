@@ -103,10 +103,23 @@ def position_size_from_equity(equity: float, price: float) -> float:
     return notional / price
 
 
-def position_size_full_leverage(equity: float, price: float, leverage: Optional[int] = None) -> float:
-    """全仓杠杆：名义仓位 = 权益 * leverage，返回 BTC 数量。"""
-    if price <= 0:
+def position_size_by_risk(
+    equity: float,
+    price: float,
+    risk_ratio: float,
+    stop_loss_ratio: float,
+    fee_rate: float,
+    leverage: Optional[int] = None,
+) -> float:
+    """
+    按单笔风险预算定仓：触发止损时（含开平双边手续费）亏损 ≈ 权益 × risk_ratio。
+    名义仓位受 leverage 上限约束，返回 BTC 数量。
+    """
+    if price <= 0 or risk_ratio <= 0:
+        return 0.0
+    loss_per_notional = stop_loss_ratio + 2 * fee_rate
+    if loss_per_notional <= 0:
         return 0.0
     lev = leverage if leverage is not None else LEVERAGE
-    notional = equity * lev
+    notional = min(equity * risk_ratio / loss_per_notional, equity * lev)
     return notional / price

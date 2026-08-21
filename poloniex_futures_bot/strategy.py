@@ -4,7 +4,7 @@
 统一接口 compute_signal() -> (direction, sl, tp, rationale, signal_quality)；config.STRATEGY 选择策略。
 增强版：信号质量评分、趋势过滤、防假突破。
 """
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 
 import config_bootstrap  # noqa: F401
 
@@ -662,34 +662,41 @@ def _calculate_signal_quality(
     lows: List[float],
     closes: List[float],
     direction: int,
-) -> float:
+) -> Tuple[float, Dict[str, float]]:
     """
     计算信号质量评分 (0-1)，综合考虑：
     1. 趋势强度 (ADX)
     2. 成交量确认
     3. 价格动量
     4. 波动率适中性
+    返回 (总分, 各维度得分)。分项之和即总分，便于事后标定权重与阈值。
     """
+    parts: Dict[str, float] = {
+        "adx": 0.0,
+        "volume": 0.0,
+        "momentum": 0.0,
+        "volatility": 0.0,
+        "fallback": 0.0,
+    }
     if direction == 0:
-        return 0.0
-    
+        return 0.0, parts
+
     n = len(closes)
     if n < 50:
-        return 0.5
-    
-    score = 0.0
-    
+        parts["fallback"] = 0.5
+        return 0.5, parts
+
     # 1. ADX 趋势强度 (0-0.3分)
     if n >= AUTO_ADX_PERIOD * 2:
         adx_series = _adx(highs, lows, closes, AUTO_ADX_PERIOD)
         adx_val = adx_series[n - 1]
         if adx_val >= 40:
-            score += 0.3
+            parts["adx"] = 0.3
         elif adx_val >= 25:
-            score += 0.2
+            parts["adx"] = 0.2
         elif adx_val >= 20:
-            score += 0.1
-    
+            parts["adx"] = 0.1
+
     # 2. 成交量确认 (0-0.25分)
     if len(opens) == n:
         amounts = [abs(closes[j] - opens[j]) * (highs[j] - lows[j] + 1) for j in range(n)]
@@ -697,35 +704,35 @@ def _calculate_signal_quality(
             recent_vol = sum(amounts[-5:]) / 5
             avg_vol = sum(amounts[-20:]) / 20
             if recent_vol > avg_vol * 1.5:
-                score += 0.25
+                parts["volume"] = 0.25
             elif recent_vol > avg_vol * 1.2:
-                score += 0.15
+                parts["volume"] = 0.15
             elif recent_vol > avg_vol:
-                score += 0.05
-    
+                parts["volume"] = 0.05
+
     # 3. 价格动量 (0-0.25分)
     if n >= 10:
         momentum = (closes[-1] - closes[-10]) / closes[-10] if closes[-10] > 0 else 0
         if direction == 1 and momentum > 0.02:
-            score += 0.25
+            parts["momentum"] = 0.25
         elif direction == 1 and momentum > 0.01:
-            score += 0.15
+            parts["momentum"] = 0.15
         elif direction == -1 and momentum < -0.02:
-            score += 0.25
+            parts["momentum"] = 0.25
         elif direction == -1 and momentum < -0.01:
-            score += 0.15
-    
+            parts["momentum"] = 0.15
+
     # 4. 波动率适中 (0-0.2分) - 太高或太低都不好
     atr_series = _atr(highs, lows, closes, ATR_PERIOD)
     atr_val = atr_series[n - 1] if n > ATR_PERIOD else 0
     price = closes[n - 1]
     atr_pct = (atr_val / price * 100) if price > 0 else 0
     if 0.5 <= atr_pct <= 3.0:
-        score += 0.2
+        parts["volatility"] = 0.2
     elif 0.3 <= atr_pct <= 4.0:
-        score += 0.1
-    
-    return min(score, 1.0)
+        parts["volatility"] = 0.1
+
+    return min(sum(parts.values()), 1.0), parts
 
 
 def _check_trend_filter(
@@ -775,19 +782,19 @@ def compute_signal(
     highs: List[float],
     lows: List[float],
     closes: List[float],
-) -> Tuple[int, Optional[float], Optional[float], str, Optional[float]]:
+) -> Tuple[int, Optional[float], Optional[float], str, Optional[float], Dict[str, float]]:
     """
-    返回 (direction, stop_loss_price, take_profit_price, rationale, signal_quality)。
+    返回 (direction, stop_loss_price, take_profit_price, rationale, signal_quality, quality_parts)。
     direction: 1=多, -1=空, 0=无。
-    signal_quality: 0-1 信号质量评分
+    signal_quality: 0-1 信号质量评分；quality_parts: 各维度得分明细
     STRATEGY: auto | hf | ema_cross | macd | rsi | composite | consensus | mtf | freqtrade
     FREQTRADE_CONFIRM=True 时主策略须与 freqtrade 风格同向才出信号。
     """
     s = (STRATEGY or "ema_cross").strip().lower()
     if s == "freqtrade":
         bd, bsl, btp, br = compute_freqtrade_signal(opens, highs, lows, closes)
-        quality = _calculate_signal_quality(opens, highs, lows, closes, bd)
-        return bd, bsl, btp, br, quality
+        quality, quality_parts = _calculate_signal_quality(opens, highs, lows, closes, bd)
+        return bd, bsl, btp, br, quality, quality_parts
 
     if s == "auto":
         bd, bsl, btp, br = _compute_auto(opens, highs, lows, closes)
@@ -798,16 +805,23 @@ def compute_signal(
     if bd != 0:
         trend_ok, trend_msg = _check_trend_filter(highs, lows, closes, bd)
         if not trend_ok:
-            quality = _calculate_signal_quality(opens, highs, lows, closes, 0)
-            return 0, None, None, br + f"\n\n【趋势过滤】{trend_msg}", quality
+            quality, quality_parts = _calculate_signal_quality(opens, highs, lows, closes, 0)
+            return 0, None, None, br + f"\n\n【趋势过滤】{trend_msg}", quality, quality_parts
         br += f"\n【趋势过滤】{trend_msg}"
 
     # 计算信号质量
-    quality = _calculate_signal_quality(opens, highs, lows, closes, bd)
-    
+    quality, quality_parts = _calculate_signal_quality(opens, highs, lows, closes, bd)
+
     # 低质量信号过滤
     if bd != 0 and quality < 0.3:
-        return 0, None, None, br + f"\n\n【信号质量过滤】质量评分 {quality:.2f} < 0.3，信号太弱", quality
+        return (
+            0,
+            None,
+            None,
+            br + f"\n\n【信号质量过滤】质量评分 {quality:.2f} < 0.3，信号太弱",
+            quality,
+            quality_parts,
+        )
 
     if FREQTRADE_CONFIRM:
         fd, fsl, ftp, fr = compute_freqtrade_signal(opens, highs, lows, closes)
@@ -821,6 +835,7 @@ def compute_signal(
                 + "\n---\nFreqtrade:\n"
                 + fr,
                 quality,
+                quality_parts,
             )
         if bd in (1, -1) and fd == bd:
             sl = bsl if bsl is not None else fsl
@@ -831,6 +846,7 @@ def compute_signal(
                 tp,
                 "【主策略 + Freqtrade 一致】\n" + br + "\n---\n" + fr,
                 quality,
+                quality_parts,
             )
         return (
             0,
@@ -838,9 +854,10 @@ def compute_signal(
             None,
             "【无开仓信号】\n主策略:\n" + br + "\n---\nFreqtrade:\n" + fr,
             quality,
+            quality_parts,
         )
 
-    return bd, bsl, btp, br, quality
+    return bd, bsl, btp, br, quality, quality_parts
 
 
 def check_stop_loss_take_profit(

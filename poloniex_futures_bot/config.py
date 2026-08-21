@@ -107,6 +107,11 @@ MAX_HOLD_CYCLES = 120
 POSITION_EQUITY_RATIO = 0.08
 MAX_CONSECUTIVE_LOSSES = 2
 DAILY_LOSS_RATIO = 0.04
+# 单笔风险预算：触发止损时（含开平双边手续费）最多亏掉的权益比例
+# 名义仓位 = 权益 × RISK_PER_TRADE / (STOP_LOSS_RATIO + 2×手续费率)，并受 LEVERAGE 上限约束
+RISK_PER_TRADE = 0.015
+# 连亏达上限后的冷静期（秒），到点自动复位计数，避免永久停机
+CONSECUTIVE_LOSS_COOLDOWN_SEC = 14400
 
 # 开仓门禁
 ENTRY_MIN_SIGNAL_QUALITY = 0.42
@@ -131,11 +136,19 @@ TELEGRAM_CHAT_ID = None        # TODO: 填入群组 ID，如 -1001234567890
 # Redis
 REDIS_URL = "redis://127.0.0.1:6379/0"
 
-# 决策日志
+# 决策日志（逐轮快照，用于排查「为什么没开仓」）
 DECISION_JOURNAL_ENABLED = True
 DECISION_JOURNAL_PATH = "logs/decision_journal.jsonl"
 DECISION_JOURNAL_EXCHANGES = ["binance", "bybit", "okx", "bitget", "gate", "htx", "kucoin", "mexc"]
 DECISION_JOURNAL_PARALLEL = True
+# 空转轮次（停机/无信号/不加仓）的最小写入间隔，action 变化时不受限制；0 = 每轮都写
+DECISION_JOURNAL_IDLE_MIN_INTERVAL_SEC = 900
+# 超过该体积轮转一代（.1），磁盘占用约束在 2 倍以内；0 = 不轮转
+DECISION_JOURNAL_MAX_MB = 64
+
+# 交易日志（每笔一条，含 pnl / MFE / MAE / 质量分项，用于归因与参数标定）
+TRADE_JOURNAL_ENABLED = True
+TRADE_JOURNAL_PATH = "logs/trades.jsonl"
 
 # 代理（国内访问 binance 等需要）
 CCXT_PROXY = ""                # 如 "http://127.0.0.1:7890"

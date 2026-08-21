@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 风控：连续亏损 N 次停机（config.MAX_CONSECUTIVE_LOSSES）；每日亏损 5% 停机。
+连亏停机为冷静期而非永久熔断：经过 CONSECUTIVE_LOSS_COOLDOWN_SEC 后自动复位。
 增强：交易统计、胜率、盈亏比、最大回撤、动态仓位调整。
 """
 import time
 from typing import Optional, Tuple, Dict, Any
-from config import MAX_CONSECUTIVE_LOSSES, DAILY_LOSS_RATIO
+
+import config_bootstrap  # noqa: F401
+
+from config import MAX_CONSECUTIVE_LOSSES, DAILY_LOSS_RATIO, CONSECUTIVE_LOSS_COOLDOWN_SEC
 
 
 class RiskManager:
@@ -13,6 +17,7 @@ class RiskManager:
         self.consecutive_losses = 0
         self.daily_pnl: float = 0.0
         self.daily_reset_ts: int = 0
+        self.cooldown_until_ts: float = 0.0
         
         # 交易统计
         self.total_trades = 0
@@ -55,6 +60,8 @@ class RiskManager:
             self.losing_trades += 1
             self.total_loss += abs(pnl)
             self.max_loss = max(self.max_loss, abs(pnl))
+            if self.consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+                self.cooldown_until_ts = time.time() + CONSECUTIVE_LOSS_COOLDOWN_SEC
         
         # 回撤计算
         if equity > self.peak_equity:
@@ -68,7 +75,14 @@ class RiskManager:
             self.recent_trades.pop(0)
 
     def should_stop_consecutive_loss(self) -> bool:
-        return self.consecutive_losses >= MAX_CONSECUTIVE_LOSSES
+        """连亏达上限后进入冷静期；冷静期满则复位计数，避免永久停机。"""
+        if self.consecutive_losses < MAX_CONSECUTIVE_LOSSES:
+            return False
+        if time.time() >= self.cooldown_until_ts:
+            self.consecutive_losses = 0
+            self.cooldown_until_ts = 0.0
+            return False
+        return True
 
     def should_stop_daily_loss(self, equity: float) -> bool:
         if equity <= 0:
@@ -79,7 +93,11 @@ class RiskManager:
     def can_trade(self, equity: float) -> Tuple[bool, str]:
         """返回 (是否可以交易, 原因)。"""
         if self.should_stop_consecutive_loss():
-            return False, f"连续亏损 {self.consecutive_losses} 次，已达上限 {MAX_CONSECUTIVE_LOSSES}"
+            left = int(max(0.0, self.cooldown_until_ts - time.time()))
+            return False, (
+                f"连续亏损 {self.consecutive_losses} 次，已达上限 {MAX_CONSECUTIVE_LOSSES}，"
+                f"冷静期剩余 {left}s"
+            )
         if self.should_stop_daily_loss(equity):
             return False, f"当日亏损 {self.daily_pnl:.2f} 已达权益 {equity:.2f} 的 {DAILY_LOSS_RATIO*100}%"
         return True, ""

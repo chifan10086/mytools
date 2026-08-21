@@ -120,6 +120,11 @@ MAX_HOLD_CYCLES = 120
 POSITION_EQUITY_RATIO = 0.08
 MAX_CONSECUTIVE_LOSSES = 2
 DAILY_LOSS_RATIO = 0.04
+# 单笔风险预算：触发止损时（含开平双边手续费）最多亏掉的权益比例
+# 名义仓位 = 权益 × RISK_PER_TRADE / (STOP_LOSS_RATIO + 2×手续费率)，并受 LEVERAGE 上限约束
+RISK_PER_TRADE = 0.015
+# 连亏达上限后的冷静期（秒），到点自动复位计数，避免永久停机
+CONSECUTIVE_LOSS_COOLDOWN_SEC = 14400
 
 # 开仓门禁（按 logs/decision_journal.jsonl 复盘：边际 quality≈0.30–0.35 的成交易连亏；可提高阈值并要求多所 pressure 同向）
 # 设为 0 可关闭对应项。反手默认更严（多付一次平仓手续费）。
@@ -152,6 +157,14 @@ DECISION_JOURNAL_PATH = "logs/decision_journal.jsonl"
 # 日志里拉取的交易所（可多于 CONSENSUS_EXCHANGES）；需与 multi_exchange.fetch_exchanges 内实现一致
 DECISION_JOURNAL_EXCHANGES = ["binance", "bybit", "okx", "bitget", "gate", "htx", "kucoin", "mexc"]
 DECISION_JOURNAL_PARALLEL = True
+# 空转轮次（停机/无信号/不加仓）的最小写入间隔，action 变化时不受限制；0 = 每轮都写
+DECISION_JOURNAL_IDLE_MIN_INTERVAL_SEC = 900
+# 超过该体积轮转一代（.1），磁盘占用约束在 2 倍以内；0 = 不轮转
+DECISION_JOURNAL_MAX_MB = 64
+
+# 交易日志（每笔一条，含 pnl / MFE / MAE / 质量分项，用于归因与参数标定）
+TRADE_JOURNAL_ENABLED = True
+TRADE_JOURNAL_PATH = "logs/trades.jsonl"
 
 # ccxt 拉取多所公开数据时的 HTTP/SOCKS 代理（国内访问 binance 等常用）；留空则直连
 # 例：CCXT_PROXY = "http://127.0.0.1:7890" 或 "socks5://127.0.0.1:1080"

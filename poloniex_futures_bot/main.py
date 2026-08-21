@@ -17,6 +17,9 @@ from config import (
     LEVERAGE,
     MAX_HOLD_CYCLES,
     INITIAL_EQUITY,
+    RISK_PER_TRADE,
+    STOP_LOSS_RATIO,
+    TAKE_PROFIT_RATIO,
     FUTURES_TAKER_FEE_RATE,
     FUNDING_SETTLEMENT_SECONDS,
     USE_API_FUNDING_RATE,
@@ -37,12 +40,13 @@ from exchange import (
     open_short,
     close_position,
     position_size_from_equity,
-    position_size_full_leverage,
+    position_size_by_risk,
 )
 from notify import notify_trade, notify_close, save_equity_redis, notify_hourly_pnl_report
 from rest_client import get_market_funding_rate
 from decision_journal import append_cycle_journal, prefetch_cross_exchange_for_cycle
 from entry_gates import passes_entry_gates, will_open_or_reverse
+from trade_journal import TradeRecorder
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -166,7 +170,35 @@ def _get_market_state_summary(mark_price: float) -> str:
         return f"获取失败: {str(e)}"
 
 
-def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
+def _paper_costs(paper: Optional[PaperEngine]) -> tuple:
+    """返回 (累计手续费, 累计资金费现金流)，用于按笔差分归集成本。"""
+    if paper is None:
+        return 0.0, 0.0
+    snap = paper.accounting_snapshot()
+    return float(snap.get("total_fees_paid", 0.0)), float(snap.get("total_funding_cashflow", 0.0))
+
+
+def _entry_context(
+    signal_quality: Optional[float],
+    quality_parts: Dict[str, float],
+    position_scale: float,
+    jm: Dict[str, Any],
+) -> Dict[str, Any]:
+    """入场瞬间固化的决策上下文；止损止盈比例一并记下，便于日后改参后仍可解读旧样本。"""
+    cx = jm.get("cross_exchange") or {}
+    return {
+        "strategy": str(getattr(_cfg, "STRATEGY", "")).strip().lower(),
+        "signal_quality": signal_quality,
+        "quality_parts": quality_parts,
+        "position_scale": position_scale,
+        "global_pressure": cx.get("global_pressure"),
+        "exchanges_ok": len(cx.get("exchanges_ok") or []),
+        "stop_loss_ratio": STOP_LOSS_RATIO,
+        "take_profit_ratio": TAKE_PROFIT_RATIO,
+    }
+
+
+def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecorder) -> None:
     global _cycles_with_position, _last_decision_rationale, _position_entry_time, _last_signal_quality
     jm: Dict[str, Any] = {"unix_ts": time.time()}
     try:
@@ -215,8 +247,10 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             jm["action"] = "abort_bad_equity"
             return
 
+        trades.update(mark_price)
+
         # 3. 信号与依据（返回包含信号质量）
-        direction, sl, tp, rationale, signal_quality = compute_signal(o, h, l, c)
+        direction, sl, tp, rationale, signal_quality, quality_parts = compute_signal(o, h, l, c)
         _last_decision_rationale = rationale
         _last_signal_quality = signal_quality
         jm.update(
@@ -226,6 +260,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
                 "tp": tp,
                 "rationale": rationale,
                 "signal_quality": signal_quality,
+                "quality_parts": quality_parts,
             }
         )
 
@@ -233,16 +268,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
 
         _maybe_hourly_report(paper, equity, mark_price, pos_side, pos_size, entry_price, risk)
 
-        # 4. 风控
-        can_trade, reason = risk.can_trade(equity)
-        jm["can_trade"] = can_trade
-        jm["risk_reason"] = reason
-        if not can_trade:
-            logger.warning("风控停机: %s", reason)
-            jm["action"] = "risk_blocked"
-            return
-
-        # 5. 止损/止盈检查（有持仓时）
+        # 4. 止损/止盈检查（有持仓时）。离场先于风控：停机期间仍须能平仓
         if pos_side and pos_size > 0:
             sl_tp = check_stop_loss_take_profit(pos_side, entry_price, mark_price)
             if sl_tp:
@@ -252,6 +278,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
                 _cycles_with_position = 0
                 _position_entry_time = None
                 equity_after = get_equity_and_position(paper, mark_price)[0]
+                trades.close_trade(mark_price, str(sl_tp), pnl, equity_after, *_paper_costs(paper))
                 notify_close(
                     pos_side,
                     mark_price,
@@ -275,6 +302,9 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
                     _cycles_with_position = 0
                     _position_entry_time = None
                     equity_after = get_equity_and_position(paper, mark_price)[0]
+                    trades.close_trade(
+                        mark_price, "max_hold_cycles", pnl, equity_after, *_paper_costs(paper)
+                    )
                     notify_close(
                         pos_side,
                         mark_price,
@@ -291,11 +321,30 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
         else:
             _cycles_with_position = 0
 
-        # 6. 仓位：根据风控建议动态调整
+        # 5. 风控：仅拦截开新仓，不影响上面的离场
+        can_trade, reason = risk.can_trade(equity)
+        jm["can_trade"] = can_trade
+        jm["risk_reason"] = reason
+        if not can_trade:
+            logger.warning("风控停机: %s", reason)
+            jm["action"] = "risk_blocked"
+            return
+
+        # 6. 仓位：按单笔风险预算定仓，再叠加风控建议的缩放
         position_scale = risk.suggest_position_scale()
         jm["position_scale"] = position_scale
         if SIMULATE_ONLY:
-            size = position_size_full_leverage(equity, mark_price, LEVERAGE) * position_scale
+            size = (
+                position_size_by_risk(
+                    equity,
+                    mark_price,
+                    RISK_PER_TRADE,
+                    STOP_LOSS_RATIO,
+                    FUTURES_TAKER_FEE_RATE,
+                    LEVERAGE,
+                )
+                * position_scale
+            )
         else:
             size = position_size_from_equity(equity, mark_price) * position_scale
         if size <= 0:
@@ -320,6 +369,9 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             risk.record_trade(pnl, equity)
             _cycles_with_position = 0
             equity_after = get_equity_and_position(paper, mark_price)[0]
+            trades.close_trade(
+                mark_price, "reverse_to_short", pnl, equity_after, *_paper_costs(paper)
+            )
             logger.info("平多 @ %s, 盈亏=%.2f，准备开空", mark_price, pnl)
             notify_close(
                 "LONG",
@@ -331,9 +383,20 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
                 entry_price=entry_price,
                 hold_time=hold_time,
             )
+            costs_before = _paper_costs(paper)
             open_short(mark_price, size, sl, tp, paper)
             _position_entry_time = time.time()
             equity_now = get_equity_and_position(paper, mark_price)[0]
+            trades.open_trade(
+                "SHORT",
+                mark_price,
+                size,
+                sl,
+                tp,
+                equity_now,
+                _entry_context(signal_quality, quality_parts, position_scale, jm),
+                *costs_before,
+            )
             notify_trade(
                 "开空",
                 mark_price,
@@ -355,6 +418,9 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             risk.record_trade(pnl, equity)
             _cycles_with_position = 0
             equity_after = get_equity_and_position(paper, mark_price)[0]
+            trades.close_trade(
+                mark_price, "reverse_to_long", pnl, equity_after, *_paper_costs(paper)
+            )
             logger.info("平空 @ %s, 盈亏=%.2f，准备开多", mark_price, pnl)
             notify_close(
                 "SHORT",
@@ -366,9 +432,20 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
                 entry_price=entry_price,
                 hold_time=hold_time,
             )
+            costs_before = _paper_costs(paper)
             open_long(mark_price, size, sl, tp, paper)
             _position_entry_time = time.time()
             equity_now = get_equity_and_position(paper, mark_price)[0]
+            trades.open_trade(
+                "LONG",
+                mark_price,
+                size,
+                sl,
+                tp,
+                equity_now,
+                _entry_context(signal_quality, quality_parts, position_scale, jm),
+                *costs_before,
+            )
             notify_trade(
                 "开多",
                 mark_price,
@@ -392,9 +469,20 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             jm["action"] = "hold_same_direction_no_add"
             return
         if direction == 1:
+            costs_before = _paper_costs(paper)
             open_long(mark_price, size, sl, tp, paper)
             _position_entry_time = time.time()
             equity_now = get_equity_and_position(paper, mark_price)[0]
+            trades.open_trade(
+                "LONG",
+                mark_price,
+                size,
+                sl,
+                tp,
+                equity_now,
+                _entry_context(signal_quality, quality_parts, position_scale, jm),
+                *costs_before,
+            )
             notify_trade(
                 "开多",
                 mark_price,
@@ -410,9 +498,20 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager) -> None:
             logger.info("开多 size=%.4f sl=%s tp=%s", size, sl, tp)
             jm["action"] = "open_long"
         elif direction == -1:
+            costs_before = _paper_costs(paper)
             open_short(mark_price, size, sl, tp, paper)
             _position_entry_time = time.time()
             equity_now = get_equity_and_position(paper, mark_price)[0]
+            trades.open_trade(
+                "SHORT",
+                mark_price,
+                size,
+                sl,
+                tp,
+                equity_now,
+                _entry_context(signal_quality, quality_parts, position_scale, jm),
+                *costs_before,
+            )
             notify_trade(
                 "开空",
                 mark_price,
@@ -485,6 +584,7 @@ def main() -> None:
         else None
     )
     risk = RiskManager()
+    trades = TradeRecorder()
 
     if SIMULATE_ONLY:
         logger.info("模拟交易模式：不配置 Key，自动多空决策，全仓 %s 倍，Telegram + Redis", LEVERAGE)
@@ -502,7 +602,7 @@ def main() -> None:
     interval_sec = 60  # 每分钟轮询一次
     while True:
         try:
-            run_once(paper, risk)
+            run_once(paper, risk, trades)
             if PAPER_MODE and paper:
                 logger.info("Paper 权益 ≈ %.2f", paper.get_equity())
         except Exception as e:

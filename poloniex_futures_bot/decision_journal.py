@@ -2,12 +2,16 @@
 """
 每轮交易循环的决策与数据 JSONL 日志，供事后复盘与多所对比分析。
 与下单逻辑解耦：写入失败不影响交易；多交易所拉取可配置并行。
+
+体积控制：无动作的空转轮次按 DECISION_JOURNAL_IDLE_MIN_INTERVAL_SEC 降频（action 变化时必写）；
+risk_stats 仅在变化时写入；文件超过 DECISION_JOURNAL_MAX_MB 时轮转一代。
+逐笔交易结果见 trade_journal 写出的 trades.jsonl。
 """
 import json
 import logging
 import os
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import config_bootstrap  # noqa: F401
 
@@ -26,6 +30,21 @@ from multi_exchange import fetch_exchanges, volume_weights, global_pressure
 
 logger = logging.getLogger(__name__)
 
+# 空转轮次（无开平仓动作）在日志里高度重复，仅按间隔采样
+_IDLE_ACTIONS = frozenset(
+    {
+        "risk_blocked",
+        "flat_no_signal",
+        "hold_same_direction_no_add",
+        "skip_entry_gate",
+        "skip_zero_size",
+    }
+)
+
+_last_idle_write_ts: float = 0.0
+_last_action: Optional[str] = None
+_last_risk_stats: Optional[str] = None
+
 
 def _cfg_bool(name: str, default: bool) -> bool:
     import config as _c
@@ -41,6 +60,15 @@ def _cfg_str(name: str, default: str) -> str:
 
     v = getattr(_c, name, default)
     return str(v) if v is not None else default
+
+
+def _cfg_num(name: str, default: float) -> float:
+    import config as _c
+
+    try:
+        return float(getattr(_c, name, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def _cfg_list(name: str, default: List[str]) -> List[str]:
@@ -73,7 +101,6 @@ def _poloniex_derived(
         "interval": KLINE_INTERVAL,
         "limit": KLINE_LIMIT,
         "last_ohlc": {"o": round(o[-1], 2), "h": round(h[-1], 2), "l": round(l[-1], 2), "c": round(c[-1], 2)},
-        "closes_tail_48": [round(x, 2) for x in c[-48:]],
         "rsi14": None if rsi_v is None else round(float(rsi_v), 4),
         "atr14": round(float(atr_v), 6),
         "atr14_pct_of_mark": round(atr_pct, 6),
@@ -147,11 +174,44 @@ def prefetch_cross_exchange_for_cycle(mark_price: float, jm: Dict[str, Any]) -> 
     jm["cross_exchange"] = _cross_exchange_block(mark_price)
 
 
+def _should_skip_idle(action: str) -> bool:
+    """空转轮次降频：action 未变且未到采样间隔时跳过，避免刷出成千上万条重复记录。"""
+    global _last_idle_write_ts, _last_action
+    if action not in _IDLE_ACTIONS:
+        _last_action = action
+        return False
+    interval = _cfg_num("DECISION_JOURNAL_IDLE_MIN_INTERVAL_SEC", 900.0)
+    now = time.time()
+    if action != _last_action or interval <= 0 or now - _last_idle_write_ts >= interval:
+        _last_action = action
+        _last_idle_write_ts = now
+        return False
+    return True
+
+
+def _rotate_if_needed(path: str) -> None:
+    """超过体积上限时轮转一代（.1），把磁盘占用约束在 2× 上限内。"""
+    max_mb = _cfg_num("DECISION_JOURNAL_MAX_MB", 64.0)
+    if max_mb <= 0:
+        return
+    try:
+        if os.path.getsize(path) < max_mb * 1024 * 1024:
+            return
+        os.replace(path, path + ".1")
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        logger.warning("决策日志轮转失败 %s: %s", path, e)
+
+
 def append_cycle_journal(jm: Dict[str, Any], risk: Any) -> None:
     """
     jm: main 循环内累积字段，至少可有 unix_ts、abort、action 等。
     """
     if not journal_enabled():
+        return
+    action = str(jm.get("action", "unknown"))
+    if _should_skip_idle(action):
         return
     path = _cfg_str("DECISION_JOURNAL_PATH", "logs/decision_journal.jsonl")
     record: Dict[str, Any] = {
@@ -162,9 +222,14 @@ def append_cycle_journal(jm: Dict[str, Any], risk: Any) -> None:
         "action": jm.get("action", "unknown"),
         "abort": jm.get("abort"),
     }
+    global _last_risk_stats
     try:
         if risk is not None and hasattr(risk, "get_statistics"):
-            record["risk_stats"] = risk.get_statistics()
+            stats = risk.get_statistics()
+            fingerprint = json.dumps(stats, sort_keys=True, default=str)
+            if fingerprint != _last_risk_stats:
+                record["risk_stats"] = stats
+                _last_risk_stats = fingerprint
         if "can_trade" in jm:
             record["risk_can_trade"] = jm["can_trade"]
             record["risk_reason"] = jm.get("risk_reason", "")
@@ -184,6 +249,7 @@ def append_cycle_journal(jm: Dict[str, Any], risk: Any) -> None:
                 "stop_loss": jm.get("sl"),
                 "take_profit": jm.get("tp"),
                 "signal_quality": jm.get("signal_quality"),
+                "quality_parts": jm.get("quality_parts"),
             }
         if "rationale" in jm:
             record["rationale"] = jm["rationale"]
@@ -230,6 +296,7 @@ def append_cycle_journal(jm: Dict[str, Any], risk: Any) -> None:
         parent = os.path.dirname(os.path.abspath(path))
         if parent:
             os.makedirs(parent, exist_ok=True)
+        _rotate_if_needed(path)
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
         with open(path, "a", encoding="utf-8") as f:
             f.write(line)

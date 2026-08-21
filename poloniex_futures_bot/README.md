@@ -17,7 +17,8 @@ Python 实现的 Poloniex BTC 永续合约自动交易机器人：单向持仓�
   - **composite**：EMA 趋势 + RSI 过滤（避免超买追多、超卖追空）
   - **consensus**：多交易所 BTC 永续共识，按 24h 成交额加权，pressure = a×动量 + b×OI 变化 - c×资金费率，超阈值开多/开空
 - **仓位**：权益的 10%（可配）
-- **风控**：连续亏损 3 次停机；当日亏损达权益 5% 停机
+- **风控**：连续亏损达上限进入冷静期（到点自动复位，非永久熔断）；当日亏损达权益比例上限停机。离场（止损/止盈/最大持仓）不受停机影响
+- **日志**：`logs/trades.jsonl` 每笔交易一条，含 pnl、持仓时长、手续费/资金费、MFE/MAE 与信号质量分项，供归因与参数标定；`logs/decision_journal.jsonl` 为逐轮快照，空转轮次降频并按体积轮转
 - **模拟交易模式**（`SIMULATE_ONLY=True`）：不配置 API Key，仅用公开 K 线自动多空决策；全仓 30 倍；每次决策后发 Telegram、写 Redis 记录交易价格
 
 ## 目录结构
@@ -34,6 +35,8 @@ poloniex_futures_bot/
 ├── paper_engine.py  # 模拟持仓与权益
 ├── exchange.py      # 统一封装：权益/持仓/下单/平仓（实盘或 Paper）
 ├── notify.py        # 模拟交易：Telegram 通知 + Redis 记录
+├── decision_journal.py  # 逐轮决策快照 logs/decision_journal.jsonl（空转降频、按体积轮转）
+├── trade_journal.py     # 逐笔交易结果 logs/trades.jsonl（pnl / MFE / MAE / 质量分项）
 ├── main.py          # 主循环
 ├── requirements.txt
 └── README.md
@@ -56,12 +59,14 @@ poloniex_futures_bot/
 - `STOP_LOSS_RATIO` / `TAKE_PROFIT_RATIO`：止损/止盈比例（如 0.02 / 0.03）
 - `POSITION_EQUITY_RATIO`：仓位占权益比例（默认 0.1）
 - `MAX_CONSECUTIVE_LOSSES`：连续亏损次数上限（默认 3）
+- `CONSECUTIVE_LOSS_COOLDOWN_SEC`：连亏达上限后的冷静期秒数（默认 14400），到点自动复位计数
 - `DAILY_LOSS_RATIO`：当日亏损占权益比例上限（默认 0.05）
+- `RISK_PER_TRADE`：单笔风险预算（默认 0.015）。触发止损时含双边手续费最多亏掉的权益比例
 - `PAPER_MODE`：`True` 为模拟，`False` 为实盘
 - **模拟交易**（可不填 API Key）；key、token 等**直接写在 config.py**，不用环境变量：
   - `INITIAL_EQUITY`：模拟初始本金（默认 10000），重启即按此重新开始
-  - `SIMULATE_ONLY`：`True` 时仅用公开 K 线、自动多空、全仓 `LEVERAGE` 倍（默认 30）
-  - `LEVERAGE`：全仓杠杆倍数
+  - `SIMULATE_ONLY`：`True` 时仅用公开 K 线、自动多空，仓位按 `RISK_PER_TRADE` 风险预算推算
+  - `LEVERAGE`：名义仓位的杠杆上限（默认 30），风险预算算出的仓位不会超过该上限
   - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`：决策后发到 Telegram，在 config 中填写
   - `REDIS_URL`：在 config 中填写，如 `redis://127.0.0.1:6379/0`，记录到 `poloniex_simulate:trades`、`poloniex_simulate:last_trade`；**当前权益/累计收益** 写入 `poloniex_simulate:equity`（开平仓 Telegram 通知里也会带「当前权益」「累计收益」）
 
