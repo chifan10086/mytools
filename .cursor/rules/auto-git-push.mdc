@@ -1,0 +1,14 @@
+---
+description: 本仓库改完后自动 commit 并 push，无需再问。
+alwaysApply: true
+---
+
+# 改完即推送
+
+对本仓库，用户已授权：完成代码改动后**必须** `git add` + `commit` + `push` 到当前跟踪分支，不必再确认。
+
+- 只提交本次改动相关文件；不提交 `.env`、密钥、日志、`*.db`
+- 有改动才提交；工作区干净则跳过
+- 提交说明跟现有风格：`fix|feat(scope): 中文简述`，写清为什么
+- `git push` 到已跟踪的远程分支；禁止 `--force`、禁止改 git config、禁止跳过 hook
+- 仅问答、未改文件时不要空提交
