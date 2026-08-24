@@ -126,9 +126,9 @@ ENTRY_REQUIRE_CROSS_PRESSURE_ALIGN = True
 ENTRY_CROSS_PRESSURE_MIN_ALIGN = 0.0006
 ENTRY_CROSS_PRESSURE_FAIL_OPEN = True
 ENTRY_CROSS_MIN_EXCHANGES_OK = 4
-# 盘口挂单失衡：用币安/Coinbase，不用 Poloniex。各所 imbalance 等权平均
+# 盘口挂单失衡：币安永续 + Coinbase/Kraken 美元现货，不用 Poloniex。各所 imbalance 等权平均
 ENTRY_REQUIRE_BOOK_ALIGN = True
-ENTRY_BOOK_EXCHANGES = ["binance", "coinbase"]
+ENTRY_BOOK_EXCHANGES = ["binance", "coinbase", "kraken"]
 ENTRY_BOOK_LIMIT = 20
 ENTRY_BOOK_MIN_IMBALANCE = 0.03
 ENTRY_BOOK_FAIL_OPEN = True

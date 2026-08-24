@@ -4,7 +4,7 @@
 仅用公开 API，无需鉴权；用于 consensus 策略的 pressure 与 volume 权重。
 
 支持交易所：binance, bybit, okx, bitget, gate, htx, kucoin, mexc
-盘口深度走币安 / Coinbase（现货），不用 Poloniex。
+盘口深度走币安永续 / Coinbase / Kraken（美元现货），不用 Poloniex。
 在 config 的 CONSENSUS_EXCHANGES / DECISION_JOURNAL_EXCHANGES 里填别名即可。
 国内等网络环境若 binance/bybit 等超时，可在 config 设置 CCXT_PROXY（http/https/socks5 URL）。
 """
@@ -30,10 +30,11 @@ _ALIAS: Dict[str, str] = {
 
 _exchange_cache: Dict[tuple, ccxt.Exchange] = {}
 
-# 盘口：大所深度，不用 Poloniex。coinbase 为现货，不能走 swap 默认。
+# 盘口：大所深度，不用 Poloniex。coinbase/kraken 为现货，不能走 swap 默认。
 _BOOK_VENUES: Dict[str, Dict[str, Any]] = {
     "binance": {"ccxt_id": "binanceusdm", "symbol": "BTC/USDT:USDT", "default_type": "swap"},
     "coinbase": {"ccxt_id": "coinbase", "symbol": "BTC/USD", "default_type": "spot"},
+    "kraken": {"ccxt_id": "kraken", "symbol": "BTC/USD", "default_type": "spot"},
     "bybit": {"ccxt_id": "bybit", "symbol": "BTC/USDT:USDT", "default_type": "swap"},
 }
 _book_cache: Dict[tuple, ccxt.Exchange] = {}
@@ -240,7 +241,7 @@ def _fetch_one_book(name: str, limit: int) -> Optional[Dict[str, Any]]:
     if spec is None or ex is None:
         return None
     symbols = [spec["symbol"]]
-    if name == "coinbase":
+    if name in ("coinbase", "kraken"):
         symbols = ["BTC/USD", "BTC/USDT"]
     book = None
     used = spec["symbol"]
@@ -272,7 +273,7 @@ def snapshot_major_order_books(
     币安 / Coinbase 等大所盘口失衡。各所先算无量纲 imbalance，再等权平均
     （不能把合约张数和现货 BTC 加在一起）。
     """
-    ids = exchange_ids or ["binance", "coinbase"]
+    ids = exchange_ids or ["binance", "coinbase", "kraken"]
     ids = [(e or "").strip().lower() for e in ids]
     ids = [e for e in ids if e in _BOOK_VENUES]
     if not ids:

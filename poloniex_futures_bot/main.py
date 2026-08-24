@@ -268,7 +268,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
 
         prefetch_cross_exchange_for_cycle(mark_price, jm)
         book_limit = int(getattr(_cfg, "ENTRY_BOOK_LIMIT", 20) or 20)
-        book_exs = getattr(_cfg, "ENTRY_BOOK_EXCHANGES", None) or ["binance", "coinbase"]
+        book_exs = getattr(_cfg, "ENTRY_BOOK_EXCHANGES", None) or ["binance", "coinbase", "kraken"]
         jm["order_book"] = snapshot_major_order_books(book_exs, limit=book_limit)
 
         _maybe_hourly_report(paper, equity, mark_price, pos_side, pos_size, entry_price, risk)
