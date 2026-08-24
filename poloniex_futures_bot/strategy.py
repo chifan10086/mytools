@@ -759,25 +759,27 @@ def _calculate_signal_quality(
                 parts["volume"] = 0.05
 
     # 3. 价格动量 (0-0.25分)
+    # 5m × 10 根 = 50 分钟：0.3%/0.6% 才是常见有效波动；旧门槛 1%/2% 几乎永不触发
     if n >= 10:
         momentum = (closes[-1] - closes[-10]) / closes[-10] if closes[-10] > 0 else 0
-        if direction == 1 and momentum > 0.02:
+        if direction == 1 and momentum > 0.006:
             parts["momentum"] = 0.25
-        elif direction == 1 and momentum > 0.01:
+        elif direction == 1 and momentum > 0.003:
             parts["momentum"] = 0.15
-        elif direction == -1 and momentum < -0.02:
+        elif direction == -1 and momentum < -0.006:
             parts["momentum"] = 0.25
-        elif direction == -1 and momentum < -0.01:
+        elif direction == -1 and momentum < -0.003:
             parts["momentum"] = 0.15
 
-    # 4. 波动率适中 (0-0.2分) - 太高或太低都不好
+    # 4. 波动率适中 (0-0.2分)
+    # 5m BTC ATR% 中位数约 0.20%；旧带 0.5–3.0 几乎永远为 0
     atr_series = _atr(highs, lows, closes, ATR_PERIOD)
     atr_val = atr_series[n - 1] if n > ATR_PERIOD else 0
     price = closes[n - 1]
     atr_pct = (atr_val / price * 100) if price > 0 else 0
-    if 0.5 <= atr_pct <= 3.0:
+    if 0.06 <= atr_pct <= 0.40:
         parts["volatility"] = 0.2
-    elif 0.3 <= atr_pct <= 4.0:
+    elif 0.04 <= atr_pct <= 0.80:
         parts["volatility"] = 0.1
 
     return min(sum(parts.values()), 1.0), parts

@@ -73,7 +73,7 @@ _DEFAULTS = {
     "ENTRY_REQUIRE_BOOK_ALIGN": False,
     "ENTRY_BOOK_EXCHANGES": ["binance", "coinbase"],
     "ENTRY_BOOK_LIMIT": 20,
-    "ENTRY_BOOK_MIN_IMBALANCE": 0.08,
+    "ENTRY_BOOK_MIN_IMBALANCE": 0.03,
     "ENTRY_BOOK_FAIL_OPEN": True,
     # Decision Layer 默认值
     "DECISION_LAYER_ENABLED": False,
