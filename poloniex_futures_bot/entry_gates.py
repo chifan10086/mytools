@@ -71,18 +71,45 @@ def _check_decision_layer_gate(direction: int) -> Tuple[bool, str]:
     return True, ""
 
 
+def _venue_agrees(direction: int, imb: float, min_imb: float) -> bool:
+    if direction == 1:
+        return imb >= min_imb
+    if direction == -1:
+        return imb <= -min_imb
+    return False
+
+
 def _check_book_gate(direction: int, order_book: Optional[Dict[str, Any]]) -> Tuple[bool, str]:
     if not _b("ENTRY_REQUIRE_BOOK_ALIGN", False):
         return True, ""
     fail_open = _b("ENTRY_BOOK_FAIL_OPEN", True)
     min_imb = _f("ENTRY_BOOK_MIN_IMBALANCE", 0.08)
-    if not isinstance(order_book, dict) or order_book.get("imbalance") is None:
+    if not isinstance(order_book, dict):
+        return (True, "") if fail_open else (False, "order_book_missing")
+
+    venues = order_book.get("venues")
+    if isinstance(venues, list) and venues:
+        agrees = 0
+        n = 0
+        for v in venues:
+            if not isinstance(v, dict) or v.get("imbalance") is None:
+                continue
+            n += 1
+            if _venue_agrees(direction, float(v["imbalance"]), min_imb):
+                agrees += 1
+        if n == 0:
+            return (True, "") if fail_open else (False, "order_book_missing")
+        need = 2 if n >= 2 else 1
+        if agrees < need:
+            return False, f"盘口未多数同向 {agrees}/{n} < {need}"
+        return True, ""
+
+    if order_book.get("imbalance") is None:
         return (True, "") if fail_open else (False, "order_book_missing")
     imb = float(order_book["imbalance"])
-    if direction == 1 and imb < min_imb:
-        return False, f"盘口偏空 imbalance={imb:.3f} < {min_imb:.3f}"
-    if direction == -1 and imb > -min_imb:
-        return False, f"盘口偏多 imbalance={imb:.3f} > {-min_imb:.3f}"
+    if not _venue_agrees(direction, imb, min_imb):
+        side = "偏空" if direction == 1 else "偏多"
+        return False, f"盘口{side} imbalance={imb:.3f}"
     return True, ""
 
 
@@ -144,11 +171,15 @@ def passes_entry_gates(
         return (True, "") if fail_open else (False, f"exchanges_ok {n_ok} < {min_ex_ok}")
 
     gp_f = float(gp)
-    aligned = direction * gp_f >= min_align
-    if not aligned:
-        return False, f"pressure 未同向: direction={direction} global_pressure={gp_f:.6f} 需要 direction*gp >= {min_align}"
-
-    return True, ""
+    # 弱压力当噪声放行；只拦明显反向（旧逻辑要求必须同向超过 0.0006，5m 上几乎开不成）
+    if direction * gp_f >= 0:
+        return True, ""
+    if abs(gp_f) < min_align:
+        return True, ""
+    return False, (
+        f"pressure 明显反向: direction={direction} global_pressure={gp_f:.6f} "
+        f"|gp| >= {min_align}"
+    )
 
 
 def will_open_or_reverse(direction: int, pos_side: Optional[str]) -> bool:

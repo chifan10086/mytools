@@ -123,10 +123,11 @@ CONSECUTIVE_LOSS_COOLDOWN_SEC = 14400
 ENTRY_MIN_SIGNAL_QUALITY = 0.42
 ENTRY_MIN_SIGNAL_QUALITY_REVERSE = 0.52
 ENTRY_REQUIRE_CROSS_PRESSURE_ALIGN = True
-ENTRY_CROSS_PRESSURE_MIN_ALIGN = 0.0006
+# 仅当 |global_pressure| 达到该值且与方向相反时拦截；弱压力当噪声
+ENTRY_CROSS_PRESSURE_MIN_ALIGN = 0.02
 ENTRY_CROSS_PRESSURE_FAIL_OPEN = True
 ENTRY_CROSS_MIN_EXCHANGES_OK = 4
-# 盘口挂单失衡：币安永续 + Coinbase/Kraken 美元现货，不用 Poloniex。各所 imbalance 等权平均
+# 盘口：币安永续 + Coinbase/Kraken。≥2 所时需至少 2 所同向（|imb|≥门槛），避免三所平均互相抵消
 ENTRY_REQUIRE_BOOK_ALIGN = True
 ENTRY_BOOK_EXCHANGES = ["binance", "coinbase", "kraken"]
 ENTRY_BOOK_LIMIT = 20

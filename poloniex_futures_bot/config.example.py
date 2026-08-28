@@ -135,8 +135,8 @@ CONSECUTIVE_LOSS_COOLDOWN_SEC = 14400
 ENTRY_MIN_SIGNAL_QUALITY = 0.42
 ENTRY_MIN_SIGNAL_QUALITY_REVERSE = 0.52
 ENTRY_REQUIRE_CROSS_PRESSURE_ALIGN = True
-# 做多需 global_pressure >= 该值；做空需 global_pressure <= -该值（与 consensus 公式一致）
-ENTRY_CROSS_PRESSURE_MIN_ALIGN = 0.0006
+# 仅当 |global_pressure| 达到该值且与方向相反时拦截；弱压力当噪声
+ENTRY_CROSS_PRESSURE_MIN_ALIGN = 0.02
 # 有效交易所数量不足时：True=仍允许开仓（避免因网络丢数据完全停摆）
 ENTRY_CROSS_PRESSURE_FAIL_OPEN = True
 ENTRY_CROSS_MIN_EXCHANGES_OK = 4
