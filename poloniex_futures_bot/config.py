@@ -206,3 +206,12 @@ DECISION_LAYER_GATE_ENABLED = True
 DECISION_LAYER_GATE_LONG_MIN_SCORE = -0.4     # 做多时情绪不得低于此值
 DECISION_LAYER_GATE_SHORT_MAX_SCORE = 0.4     # 做空时情绪不得高于此值
 DECISION_LAYER_GATE_MIN_CONFIDENCE = 0.3      # 置信度低于此值时门禁不生效
+
+
+# ═══════════════════ 本地覆盖（不提交 git） ═══════════════════
+# 敏感值（Telegram Token 等）写在 config_local.py，该文件已在 .gitignore 中，
+# 放在最末尾以覆盖上面的同名默认值。
+try:
+    from config_local import *  # noqa: F401,F403
+except ImportError:
+    pass

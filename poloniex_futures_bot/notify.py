@@ -3,12 +3,14 @@
 模拟交易：决策后发 Telegram、写 Redis 记录交易价格。
 增强版：详细汇报、风险指标、交易统计。
 """
+import html
 import json
 import time
+import unicodedata
 import urllib.request
 import urllib.error
 import urllib.parse
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, REDIS_URL
 
@@ -18,12 +20,14 @@ REDIS_KEY_LAST = "poloniex_simulate:last_trade"
 REDIS_KEY_EQUITY = "poloniex_simulate:equity"
 
 
-def send_telegram(text: str) -> bool:
+def send_telegram(text: str, parse_mode: Optional[str] = None) -> bool:
     """发送消息到 Telegram 群组。"""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is None:
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     body = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "disable_web_page_preview": True}
+    if parse_mode:
+        body["parse_mode"] = parse_mode
     data = urllib.parse.urlencode(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
@@ -71,18 +75,101 @@ def save_equity_redis(equity: float, initial_equity: float) -> bool:
         return False
 
 
-def send_telegram_long(text: str, chunk: int = 3900) -> None:
+def send_telegram_long(text: str, chunk: int = 3900, parse_mode: Optional[str] = None) -> None:
     """Telegram 单条上限约 4096，超长时分段发送。"""
     if not text:
         return
     t = text.strip()
     if len(t) <= chunk:
-        send_telegram(t)
+        send_telegram(t, parse_mode)
         return
     n = (len(t) + chunk - 1) // chunk
     for i in range(n):
         part = t[i * chunk : (i + 1) * chunk]
-        send_telegram(f"（{i + 1}/{n}）\n{part}")
+        send_telegram(f"（{i + 1}/{n}）\n{part}", parse_mode)
+
+
+# ───────── 报表渲染：Telegram 不支持任意文字颜色，只有代码块能语法高亮。
+# 用 language-diff 让 "+" 开头的行显绿（盈利）、"-" 开头的行显红（亏损）。 ─────────
+
+def _disp_width(s: str) -> int:
+    """显示宽度：中日韩全角字符占 2 列。"""
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in s)
+
+
+def _pad(s: str, width: int) -> str:
+    """左对齐补空格，按显示宽度算，保证等宽字体下中文标签能对齐。"""
+    return s + " " * max(0, width - _disp_width(s))
+
+
+def _rpad(s: str, width: int) -> str:
+    """右对齐补空格；值里可能含中文（如「24分」），不能用 f-string 的 :>N。"""
+    return " " * max(0, width - _disp_width(s)) + s
+
+
+def _tone(v: float) -> int:
+    """正数→绿，负数→红，零→中性。"""
+    return 1 if v > 0 else -1 if v < 0 else 0
+
+
+def _row(label: str, value: str, tone: int = 0, note: str = "") -> str:
+    """diff 代码块中的一行；行首符号决定颜色。"""
+    mark = "+" if tone > 0 else "-" if tone < 0 else " "
+    line = f"{mark} {_pad(label, 12)}{_rpad(value, 13)}"
+    return f"{line}  {note}" if note else line
+
+
+def _diff_block(rows: List[str]) -> str:
+    """包成语法高亮代码块。内容需 HTML 转义，否则含 < > & 时发送失败。"""
+    body = html.escape("\n".join(rows))
+    return f'<pre><code class="language-diff">{body}</code></pre>'
+
+
+def _section(title: str, rows: List[str]) -> str:
+    """小标题 + 彩色数据块。"""
+    return f"<b>{html.escape(title)}</b>\n{_diff_block(rows)}"
+
+
+def send_pre_text(title: str, body: str, limit: int = 3800) -> None:
+    """长自由文本（如决策依据）分段发送，每段独立包代码块，避免 HTML 标签被截断。
+
+    长度按「转义后」算：html.escape 会把 < 变成 &lt;（长度 4 倍），
+    按原文长度分页会超出 Telegram 的 4096 上限。
+    """
+    if not body:
+        return
+    # 按行拆；单行自身超限时按转义后长度硬切
+    units: List[str] = []
+    for ln in body.strip().splitlines() or [body.strip()]:
+        if len(html.escape(ln)) <= limit:
+            units.append(ln)
+            continue
+        buf: List[str] = []
+        buf_len = 0
+        for ch in ln:
+            c = len(html.escape(ch))
+            if buf_len + c > limit and buf:
+                units.append("".join(buf))
+                buf, buf_len = [], 0
+            buf.append(ch)
+            buf_len += c
+        if buf:
+            units.append("".join(buf))
+
+    pages: List[List[str]] = [[]]
+    size = 0
+    for u in units:
+        n = len(html.escape(u)) + 1
+        if size + n > limit and pages[-1]:
+            pages.append([])
+            size = 0
+        pages[-1].append(u)
+        size += n
+
+    total = len(pages)
+    for i, page in enumerate(pages, 1):
+        head = f"<b>{html.escape(title)}</b>" + (f" <i>({i}/{total})</i>" if total > 1 else "")
+        send_telegram(f"{head}\n<pre>{html.escape(chr(10).join(page))}</pre>", "HTML")
 
 
 def notify_trade(
@@ -101,60 +188,51 @@ def notify_trade(
     """决策后：发 Telegram + 写 Redis，记录交易价格。"""
     from config import SYMBOL, LEVERAGE, INITIAL_EQUITY
 
-    side_cn = "开多" if "多" in side or "LONG" in side.upper() else "开空"
-    
-    # 计算风险回报比
-    risk_reward = ""
+    is_long = "多" in side or "LONG" in side.upper()
+    title = "🟢 开多" if is_long else "🔴 开空"
+
+    rows = [
+        _row("开仓价格", f"{price:.2f}", note="USDT"),
+        _row("合约数量", f"{size:.4f}"),
+        _row("名义价值", f"{price * size:.2f}", note="USDT"),
+        _row("杠杆", f"{LEVERAGE}x"),
+    ]
+    if position_scale and position_scale != 1.0:
+        hint = "风控降仓" if position_scale < 1.0 else "表现良好加仓"
+        rows.append(_row("仓位系数", f"{position_scale:.2f}x", _tone(position_scale - 1.0), hint))
+
+    text = f"<b>{title}</b>  <code>{html.escape(SYMBOL)}</code>\n" + _diff_block(rows)
+
     if sl is not None and tp is not None:
         risk = abs(price - sl)
-        reward = abs(tp - price)
-        rr_ratio = reward / risk if risk > 0 else 0
-        sl_pct = abs(price - sl) / price * 100
-        tp_pct = abs(tp - price) / price * 100
-        risk_reward = f"止损: {sl:.2f} (-{sl_pct:.2f}%)\n止盈: {tp:.2f} (+{tp_pct:.2f}%)\n风险回报比: 1:{rr_ratio:.2f}"
-    
-    # 仓位信息
-    position_value = price * size
-    position_info = f"合约数量: {size:.4f}\n杠杆倍数: {LEVERAGE}x\n名义价值: {position_value:.2f} USDT"
-    if position_scale and position_scale != 1.0:
-        scale_reason = ""
-        if position_scale < 1.0:
-            scale_reason = " (风控降低仓位)"
-        elif position_scale > 1.0:
-            scale_reason = " (表现良好增加仓位)"
-        position_info += f"\n仓位系数: {position_scale:.2f}x{scale_reason}"
-    
-    text = (
-        f"━━━━━━━━━━━━━━━━\n"
-        f"🔔 【{side_cn}】\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"开仓价格: {price:.2f} USDT\n"
-        f"{position_info}\n\n"
-        f"{risk_reward}"
-    )
-    
-    # 权益信息
+        rr_ratio = (abs(tp - price) / risk) if risk > 0 else 0
+        text += "\n" + _section("🎯 风险控制", [
+            _row("止盈", f"{tp:.2f}", 1, f"+{abs(tp - price) / price * 100:.2f}%"),
+            _row("止损", f"{sl:.2f}", -1, f"-{abs(price - sl) / price * 100:.2f}%"),
+            _row("风险回报比", f"1:{rr_ratio:.2f}"),
+        ])
+
     if current_equity is not None and initial_equity is not None:
         pnl = current_equity - initial_equity
         pnl_pct = (pnl / initial_equity * 100) if initial_equity > 0 else 0
-        pnl_emoji = "📈" if pnl >= 0 else "📉"
-        text += f"\n\n{pnl_emoji} 账户状态\n当前权益: {current_equity:.2f} USDT\n累计收益: {pnl:+.2f} USDT ({pnl_pct:+.2f}%)"
-    
-    # 信号质量
+        text += "\n" + _section("💰 账户状态", [
+            _row("当前权益", f"{current_equity:.2f}", note="USDT"),
+            _row("累计收益", f"{abs(pnl):.2f}", _tone(pnl), f"{pnl_pct:+.2f}%"),
+        ])
+
     if signal_quality is not None:
         quality_emoji = "🟢" if signal_quality >= 0.7 else "🟡" if signal_quality >= 0.5 else "🔴"
         quality_text = "优秀" if signal_quality >= 0.7 else "良好" if signal_quality >= 0.5 else "一般"
-        text += f"\n\n📊 信号质量: {quality_emoji} {quality_text} ({signal_quality:.0%})"
-    
+        text += f"\n📊 信号质量 {quality_emoji} <b>{quality_text}</b> ({signal_quality:.0%})"
+
     if reason:
-        text += f"\n\n💡 {reason}"
-    
-    send_telegram_long(text)
-    
+        text += f"\n💡 {html.escape(reason)}"
+
+    send_telegram_long(text, parse_mode="HTML")
+
     # 决策依据单独发送（中文化）
     if decision_reason:
-        formatted_reason = _format_decision_reason(decision_reason)
-        send_telegram_long("━━━━━━━━━━━━━━━━\n📋 【决策依据】\n━━━━━━━━━━━━━━━━\n" + formatted_reason)
+        send_pre_text("📋 决策依据", _format_decision_reason(decision_reason))
 
     trade = {
         "side": side,
@@ -234,23 +312,13 @@ def notify_close(
     side_cn = "多单" if "LONG" in side.upper() else "空单"
     
     # 收益率
-    pnl_pct_text = ""
+    pct_note = ""
     if entry_price and entry_price > 0:
         if side.upper() == "LONG":
             pnl_pct = (price - entry_price) / entry_price * 100
         else:
             pnl_pct = (entry_price - price) / entry_price * 100
-        pnl_pct_text = f" ({pnl_pct:+.2f}%)"
-    
-    # 持仓时长
-    hold_text = ""
-    if hold_time:
-        hours = hold_time // 3600
-        minutes = (hold_time % 3600) // 60
-        if hours > 0:
-            hold_text = f"\n⏱ 持仓时长: {hours}小时{minutes}分钟"
-        else:
-            hold_text = f"\n⏱ 持仓时长: {minutes}分钟"
+        pct_note = f"{pnl_pct:+.2f}%"
     
     # 平仓原因中文化
     reason_cn = reason
@@ -263,30 +331,31 @@ def notify_close(
     elif "反向" in reason:
         reason_cn = reason.replace("反向开", "反向信号，准备开")
     
+    rows = [_row("本笔盈亏", f"{abs(pnl):.2f}", _tone(pnl), pct_note)]
+    if entry_price and entry_price > 0:
+        rows.append(_row("开仓价格", f"{entry_price:.2f}", note="USDT"))
+    rows.append(_row("平仓价格", f"{price:.2f}", note="USDT"))
+    if hold_time:
+        hours, minutes = hold_time // 3600, (hold_time % 3600) // 60
+        rows.append(_row("持仓时长", f"{hours}时{minutes}分" if hours else f"{minutes}分"))
+    
     text = (
-        f"━━━━━━━━━━━━━━━━\n"
-        f"{emoji} 【平仓 - {status}】\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"平仓类型: {side_cn}\n"
-        f"平仓价格: {price:.2f} USDT\n"
-        f"本笔盈亏: {pnl:+.2f} USDT{pnl_pct_text}"
-        f"{hold_text}"
+        f"<b>{emoji} 平仓·{status}</b>  <code>{html.escape(SYMBOL)}</code> {side_cn}\n"
+        + _diff_block(rows)
     )
     
     if current_equity is not None and initial_equity is not None:
         total_pnl = current_equity - initial_equity
         total_pnl_pct = (total_pnl / initial_equity * 100) if initial_equity > 0 else 0
-        pnl_emoji = "📈" if total_pnl >= 0 else "📉"
-        text += (
-            f"\n\n{pnl_emoji} 账户状态\n"
-            f"当前权益: {current_equity:.2f} USDT\n"
-            f"累计收益: {total_pnl:+.2f} USDT ({total_pnl_pct:+.2f}%)"
-        )
+        text += "\n" + _section("💰 账户状态", [
+            _row("当前权益", f"{current_equity:.2f}", note="USDT"),
+            _row("累计收益", f"{abs(total_pnl):.2f}", _tone(total_pnl), f"{total_pnl_pct:+.2f}%"),
+        ])
     
     if reason_cn:
-        text += f"\n\n💡 平仓原因: {reason_cn}"
+        text += f"\n💡 平仓原因: {html.escape(reason_cn)}"
     
-    send_telegram(text)
+    send_telegram(text, "HTML")
     save_trade_redis({
         "action": "close",
         "side": side,
@@ -327,45 +396,35 @@ def notify_hourly_pnl_report(
     cum_pnl = equity - initial_equity
     cum_pnl_pct = (cum_pnl / initial_equity * 100) if initial_equity > 0 else 0
     
+    text = (
+        f"<b>📊 小时汇总报告</b>\n"
+        f"<code>{html.escape(symbol)}</code> · {time.strftime('%Y-%m-%d %H:%M')}\n"
+        + _section("💰 权益状况", [
+            _row("本小时", f"{abs(hour_pnl):.2f}", _tone(hour_pnl), "USDT"),
+            _row("累计盈亏", f"{abs(cum_pnl):.2f}", _tone(cum_pnl), f"{cum_pnl_pct:+.2f}%"),
+            _row("当前权益", f"{equity:.2f}", note="USDT"),
+            _row("初始权益", f"{initial_equity:.2f}", note="USDT"),
+            _row("累计手续费", f"{total_fees_paid:.2f}", -1 if total_fees_paid else 0, "USDT"),
+            _row("累计资金费", f"{abs(total_funding_cashflow):.4f}", _tone(total_funding_cashflow), "USDT"),
+        ])
+    )
+    
     # 持仓信息
-    unreal_txt = ""
     if pos_side and pos_size > 0:
         if pos_side.upper() == "LONG":
             u = (mark_price - entry_price) * pos_size
-            u_pct = ((mark_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
         else:
             u = (entry_price - mark_price) * pos_size
-            u_pct = ((entry_price - mark_price) / entry_price * 100) if entry_price > 0 else 0
+        u_pct = (u / (entry_price * pos_size) * 100) if entry_price > 0 and pos_size > 0 else 0
         side_cn = "多单" if pos_side.upper() == "LONG" else "空单"
-        profit_emoji = "📈" if u >= 0 else "📉"
-        unreal_txt = (
-            f"\n\n━━━ 【持仓情况】━━━\n"
-            f"持仓类型: {side_cn}\n"
-            f"开仓价格: {entry_price:.2f} USDT\n"
-            f"当前价格: {mark_price:.2f} USDT\n"
-            f"{profit_emoji} 浮动盈亏: {u:+.2f} USDT ({u_pct:+.2f}%)\n"
-            f"💡 注: 未扣除平仓手续费"
-        )
-    
-    # 基础汇总
-    pnl_emoji = "📈" if cum_pnl >= 0 else "📉"
-    hour_emoji = "✅" if hour_pnl >= 0 else "❌"
-    
-    head = (
-        f"╔═══════════════════╗\n"
-        f"║   📊 小时汇总报告   ║\n"
-        f"╚═══════════════════╝\n"
-        f"交易对: {symbol}\n"
-        f"⏰ 时间: {time.strftime('%Y-%m-%d %H:%M')}\n\n"
-        f"━━━ 【权益状况】━━━\n"
-        f"当前权益: {equity:.2f} USDT\n"
-        f"初始权益: {initial_equity:.2f} USDT\n"
-        f"{hour_emoji} 本小时变动: {hour_pnl:+.2f} USDT\n"
-        f"{pnl_emoji} 累计盈亏: {cum_pnl:+.2f} USDT ({cum_pnl_pct:+.2f}%)\n"
-        f"💰 累计手续费: {total_fees_paid:.4f} USDT\n"
-        f"💸 累计资金费: {total_funding_cashflow:+.4f} USDT"
-        f"{unreal_txt}"
-    )
+        text += "\n" + _section("📈 持仓情况", [
+            _row("方向", side_cn),
+            _row("开仓价格", f"{entry_price:.2f}", note="USDT"),
+            _row("当前价格", f"{mark_price:.2f}", note="USDT"),
+            _row("持仓数量", f"{pos_size:.4f}"),
+            _row("浮动盈亏", f"{abs(u):.2f}", _tone(u), f"{u_pct:+.2f}%"),
+        ])
+        text += "\n<i>注: 浮动盈亏未扣除平仓手续费</i>"
     
     # 交易统计
     if risk_stats:
@@ -374,69 +433,56 @@ def notify_hourly_pnl_report(
         
         # 胜率评级
         if win_rate >= 0.6:
-            wr_emoji = "🌟"
-            wr_level = "优秀"
+            wr_tone, wr_level = 1, "优秀"
         elif win_rate >= 0.5:
-            wr_emoji = "✅"
-            wr_level = "良好"
+            wr_tone, wr_level = 1, "良好"
         elif win_rate >= 0.4:
-            wr_emoji = "⚠️"
-            wr_level = "一般"
+            wr_tone, wr_level = 0, "一般"
         else:
-            wr_emoji = "❌"
-            wr_level = "较差"
+            wr_tone, wr_level = -1, "较差"
         
         # 盈亏比评级
         if profit_factor >= 1.5:
-            pf_emoji = "🌟"
-            pf_level = "优秀"
+            pf_tone, pf_level = 1, "优秀"
         elif profit_factor >= 1.2:
-            pf_emoji = "✅"
-            pf_level = "良好"
+            pf_tone, pf_level = 1, "良好"
         elif profit_factor >= 1.0:
-            pf_emoji = "⚠️"
-            pf_level = "一般"
+            pf_tone, pf_level = 0, "一般"
         else:
-            pf_emoji = "❌"
-            pf_level = "较差"
+            pf_tone, pf_level = -1, "较差"
         
-        stats_txt = (
-            f"\n\n━━━ 【交易统计】━━━\n"
-            f"总交易笔数: {risk_stats.get('total_trades', 0)} 笔\n"
-            f"{wr_emoji} 胜率: {win_rate:.1%} ({wr_level})\n"
-            f"   盈利: {risk_stats.get('winning_trades', 0)} 笔 | "
-            f"亏损: {risk_stats.get('losing_trades', 0)} 笔\n"
-            f"{pf_emoji} 盈亏比: {profit_factor:.2f} ({pf_level})\n"
-            f"   平均盈利: {risk_stats.get('avg_win', 0):.2f} USDT\n"
-            f"   平均亏损: {risk_stats.get('avg_loss', 0):.2f} USDT\n"
-            f"📊 单笔最大盈利: {risk_stats.get('max_win', 0):.2f} USDT\n"
-            f"📊 单笔最大亏损: {risk_stats.get('max_loss', 0):.2f} USDT\n"
-            f"📉 最大回撤: {risk_stats.get('max_drawdown', 0):.2%}\n"
-            f"📉 当前回撤: {risk_stats.get('current_drawdown', 0):.2%}\n"
-            f"⚠️ 连续亏损: {risk_stats.get('consecutive_losses', 0)} 次\n"
-            f"📈 {risk_stats.get('recent_performance', '')}"
-        )
-        head += stats_txt
+        max_dd = risk_stats.get('max_drawdown', 0)
+        cur_dd = risk_stats.get('current_drawdown', 0)
+        losses = risk_stats.get('consecutive_losses', 0)
+        text += "\n" + _section("📊 交易统计", [
+            _row("总交易", f"{risk_stats.get('total_trades', 0)}", note="笔"),
+            _row("胜率", f"{win_rate:.1%}", wr_tone, wr_level),
+            _row("盈利/亏损", f"{risk_stats.get('winning_trades', 0)} / {risk_stats.get('losing_trades', 0)}", note="笔"),
+            _row("盈亏比", f"{profit_factor:.2f}", pf_tone, pf_level),
+            _row("平均盈利", f"{risk_stats.get('avg_win', 0):.2f}", 1, "USDT"),
+            _row("平均亏损", f"{abs(risk_stats.get('avg_loss', 0)):.2f}", -1, "USDT"),
+            _row("最大盈利", f"{risk_stats.get('max_win', 0):.2f}", 1, "USDT"),
+            _row("最大亏损", f"{abs(risk_stats.get('max_loss', 0)):.2f}", -1, "USDT"),
+            _row("最大回撤", f"{max_dd:.2%}", -1 if max_dd else 0),
+            _row("当前回撤", f"{cur_dd:.2%}", -1 if cur_dd else 0),
+            _row("连续亏损", f"{losses}", -1 if losses else 0, "次"),
+        ])
+        recent = risk_stats.get('recent_performance', '')
+        if recent:
+            text += f"\n📈 {html.escape(str(recent))}"
     
     # 市场状态
     if market_state:
-        head += f"\n\n━━━ 【市场状态】━━━\n{market_state}"
+        text += f"\n\n<b>🌐 市场状态</b>\n{html.escape(str(market_state))}"
     
     # 费率信息
-    head += (
-        f"\n\n━━━ 【费率信息】━━━\n"
-        f"资金费率: {funding_rate_used:.6f}\n"
-        f"Taker 费率: {taker_fee_rate:.5f}"
-    )
+    text += "\n" + _section("⚙️ 费率信息", [
+        _row("资金费率", f"{funding_rate_used:.6f}"),
+        _row("Taker 费率", f"{taker_fee_rate:.5f}"),
+    ])
     
-    send_telegram_long(head)
+    send_telegram_long(text, parse_mode="HTML")
     
     # 决策依据（中文化）
     if last_decision_rationale:
-        formatted_rationale = _format_decision_reason(last_decision_rationale)
-        send_telegram_long(
-            f"╔═══════════════════╗\n"
-            f"║   📋 最近决策依据   ║\n"
-            f"╚═══════════════════╝\n"
-            f"{formatted_rationale}"
-        )
+        send_pre_text("📋 最近决策依据", _format_decision_reason(last_decision_rationale))
