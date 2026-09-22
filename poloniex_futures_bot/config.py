@@ -68,9 +68,13 @@ MOMENTUM_LOOKBACK_BARS = 6
 CONSENSUS_EXCHANGES = ["binance", "bybit", "okx", "bitget", "gate", "htx", "kucoin", "mexc"]
 CONSENSUS_A = 1.0
 CONSENSUS_B = 0.5
-CONSENSUS_C = 100.0
-CONSENSUS_THRESHOLD_LONG = 0.35
-CONSENSUS_THRESHOLD_SHORT = -0.35
+# funding 加权后标准差仅 0.000022，为 momentum 标准差（0.00162）的 1.4%，不携带方向信息。
+# C=100 时该项贡献恒定 -0.006 偏置，令 global_pressure 在 1797 次观测中 99.1% 为负；
+# C=5 把偏置压到 momentum 标准差的 18%，保留资金费的温和修正作用。
+CONSENSUS_C = 5.0
+# 阈值须与 global_pressure 实际量级（约 ±0.01）匹配；旧值 ±0.35 恒不可达，consensus 永远无信号
+CONSENSUS_THRESHOLD_LONG = 0.0025
+CONSENSUS_THRESHOLD_SHORT = -0.0025
 CONSENSUS_MOMENTUM_MINUTES = 5
 
 # 多时间框架策略（mtf）
@@ -125,7 +129,9 @@ ENTRY_MIN_SIGNAL_QUALITY = 0.42
 ENTRY_MIN_SIGNAL_QUALITY_REVERSE = 0.52
 ENTRY_REQUIRE_CROSS_PRESSURE_ALIGN = True
 # 仅当 |global_pressure| 达到该值且与方向相反时拦截；弱压力当噪声
-ENTRY_CROSS_PRESSURE_MIN_ALIGN = 0.02
+# 旧值 0.02 超过 |global_pressure| 实际最大值 0.0166，该门禁 61 笔交易从未触发；
+# 0.0025 取 C=5 下 |gp| 的 p90，仅拦明显反向
+ENTRY_CROSS_PRESSURE_MIN_ALIGN = 0.0025
 ENTRY_CROSS_PRESSURE_FAIL_OPEN = True
 ENTRY_CROSS_MIN_EXCHANGES_OK = 4
 # 盘口：币安永续 + Coinbase/Kraken。≥2 所时需至少 2 所同向（|imb|≥门槛），避免三所平均互相抵消
