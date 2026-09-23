@@ -328,6 +328,8 @@ def notify_close(
         reason_cn = "触发止盈"
     elif "最大持仓周期" in reason:
         reason_cn = "达到最大持仓时间"
+    elif "浮盈回撤" in reason:
+        reason_cn = "浮盈回撤，锁定剩余利润"
     elif "反向" in reason:
         reason_cn = reason.replace("反向开", "反向信号，准备开")
     

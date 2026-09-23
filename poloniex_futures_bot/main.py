@@ -16,6 +16,8 @@ from config import (
     SIMULATE_ONLY,
     LEVERAGE,
     MAX_HOLD_CYCLES,
+    MAX_HOLD_ARM_RATIO,
+    MAX_HOLD_LOCK_RATIO,
     INITIAL_EQUITY,
     RISK_PER_TRADE,
     STOP_LOSS_RATIO,
@@ -54,6 +56,9 @@ logger = logging.getLogger(__name__)
 
 # 持仓后经过的轮询周期数，用于 MAX_HOLD_CYCLES 到时强制平仓
 _cycles_with_position = 0
+# 本笔持仓见过的最大有利变动（相对开仓价）。用开仓时间戳区分不同持仓，换仓自动清零
+_position_peak_ratio = 0.0
+_position_peak_for: Optional[float] = None
 _last_decision_rationale = ""
 _last_funding_rate_used = 0.0
 _hour_start_equity: Optional[float] = None
@@ -202,6 +207,7 @@ def _entry_context(
 
 def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecorder) -> None:
     global _cycles_with_position, _last_decision_rationale, _position_entry_time, _last_signal_quality
+    global _position_peak_ratio, _position_peak_for
     jm: Dict[str, Any] = {"unix_ts": time.time()}
     try:
         # 1. K 线
@@ -297,6 +303,49 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
                 logger.info("平仓 %s @ %s, 盈亏=%.2f", sl_tp, mark_price, pnl)
                 jm["action"] = "close_" + str(sl_tp)
                 return
+            # 浮盈保护：曾达到 ARM 后回落到 LOCK 就平，避免超时前把浮盈吐成亏损
+            if entry_price > 0 and MAX_HOLD_ARM_RATIO > MAX_HOLD_LOCK_RATIO:
+                if _position_peak_for != _position_entry_time:
+                    _position_peak_ratio = 0.0
+                    _position_peak_for = _position_entry_time
+                if pos_side == "LONG":
+                    fav = (mark_price - entry_price) / entry_price
+                else:
+                    fav = (entry_price - mark_price) / entry_price
+                if fav > _position_peak_ratio:
+                    _position_peak_ratio = fav
+                if _position_peak_ratio >= MAX_HOLD_ARM_RATIO and fav <= MAX_HOLD_LOCK_RATIO:
+                    hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
+                    peak = _position_peak_ratio
+                    pnl = close_position(pos_side, pos_size, mark_price, paper)
+                    risk.record_trade(pnl, equity)
+                    _cycles_with_position = 0
+                    _position_entry_time = None
+                    _position_peak_ratio = 0.0
+                    _position_peak_for = None
+                    equity_after = get_equity_and_position(paper, mark_price)[0]
+                    trades.close_trade(
+                        mark_price, "profit_lock", pnl, equity_after, *_paper_costs(paper)
+                    )
+                    notify_close(
+                        pos_side,
+                        mark_price,
+                        pnl,
+                        "浮盈回撤（本笔已扣平仓手续费）",
+                        current_equity=equity_after,
+                        initial_equity=INITIAL_EQUITY,
+                        entry_price=entry_price,
+                        hold_time=hold_time,
+                    )
+                    logger.info(
+                        "平仓 浮盈回撤 peak=%.4f now=%.4f @ %s, 盈亏=%.2f",
+                        peak,
+                        fav,
+                        mark_price,
+                        pnl,
+                    )
+                    jm["action"] = "close_profit_lock"
+                    return
             # 最大持仓周期：到点强制平仓，便于频繁重新开仓
             if MAX_HOLD_CYCLES > 0:
                 _cycles_with_position += 1

@@ -117,8 +117,11 @@ AUTO_STRATEGY_EXTREME = "composite"
 # 杠杆下本金波动 ≈ 标价变动% × 杠杆；LEVERAGE 已下调时请自行换算
 STOP_LOSS_RATIO = 0.004
 TAKE_PROFIT_RATIO = 0.008
-# 最大持仓周期数：每 60 秒一轮；120≈2 小时强平换手机会，避免长时间扛单
+# 最大持仓周期数：每 60 秒一轮；120≈2 小时强平，避免长时间扛单
 MAX_HOLD_CYCLES = 120
+# 曾浮盈达到 ARM 后，回落到 LOCK 就提前平，避免浮盈吐成亏损
+MAX_HOLD_ARM_RATIO = 0.0025
+MAX_HOLD_LOCK_RATIO = 0.001
 
 # 仓位与风控
 POSITION_EQUITY_RATIO = 0.08

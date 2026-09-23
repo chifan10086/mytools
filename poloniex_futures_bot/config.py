@@ -112,7 +112,13 @@ AUTO_STRATEGY_EXTREME = "composite"
 # 旧值 SL=2×ATR 落在噪声带里，23 笔止损的 MAE 全部集中在 -0.40%~-0.50%
 STOP_LOSS_RATIO = 0.006
 TAKE_PROFIT_RATIO = 0.006
+# 每 60 秒一轮，120≈2 小时。到点仍未触及止盈/止损就平仓。
+# 回放过：拉长到 4–8 小时，这些单更多打止损而不是止盈；缩短到 60–90 分钟会砍掉慢止盈。保持 120。
 MAX_HOLD_CYCLES = 120
+# 浮盈保护：曾达到 ARM 后回落到 LOCK 就提前平，避免把浮盈吐成亏损再被 2 小时规则扫掉。
+# 28 笔超时单里多笔 MFE 在 0.25%～0.45%，出场却是亏的。
+MAX_HOLD_ARM_RATIO = 0.0025
+MAX_HOLD_LOCK_RATIO = 0.001
 
 # 仓位与风控
 POSITION_EQUITY_RATIO = 0.08
