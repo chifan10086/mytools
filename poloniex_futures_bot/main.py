@@ -346,7 +346,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
                     )
                     jm["action"] = "close_profit_lock"
                     return
-            # 最大持仓周期：到点强制平仓，便于频繁重新开仓
+            # MAX_HOLD_CYCLES=0 时不按时间平仓
             if MAX_HOLD_CYCLES > 0:
                 _cycles_with_position += 1
                 if _cycles_with_position >= MAX_HOLD_CYCLES:
