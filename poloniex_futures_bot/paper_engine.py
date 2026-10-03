@@ -105,6 +105,27 @@ class PaperEngine:
             "total_funding_cashflow": self.total_funding_cashflow,
         }
 
+    _STATE_FIELDS = (
+        "equity",
+        "position_side",
+        "position_size",
+        "entry_price",
+        "stop_loss",
+        "take_profit",
+        "total_fees_paid",
+        "total_funding_cashflow",
+        "_last_funding_ts",
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self._STATE_FIELDS}
+
+    def restore(self, data: Dict[str, Any]) -> None:
+        """从 to_dict() 的结果恢复；缺字段保持当前值。"""
+        for k in self._STATE_FIELDS:
+            if k in data:
+                setattr(self, k, data[k])
+
     def position_size_from_equity(self, price: float) -> float:
         """按权益的 POSITION_EQUITY_RATIO 计算张数（简化：1 张 = 1 单位 BTC）。"""
         if price <= 0:

@@ -61,12 +61,23 @@ def get_equity_and_position(paper: Optional[PaperEngine], mark_price: float) -> 
 
 
 def fetch_klines() -> List[List]:
+    """信号用 K 线：KLINE_SOURCES 多所中位数共识 → 币安单家 → Poloniex。"""
+    import config as _cfg
     from config import KLINE_INTERVAL, KLINE_LIMIT
-    from multi_exchange import fetch_binance_klines
+    import multi_exchange
+    from multi_exchange import fetch_binance_klines, fetch_consensus_klines
 
+    sources = list(getattr(_cfg, "KLINE_SOURCES", None) or [])
+    min_sources = int(getattr(_cfg, "KLINE_MIN_SOURCES", 1) or 1)
+    if len(sources) > 1:
+        rows = fetch_consensus_klines(KLINE_INTERVAL, KLINE_LIMIT, sources, min_sources)
+        if rows:
+            return rows
     rows = fetch_binance_klines(KLINE_INTERVAL, KLINE_LIMIT)
     if rows:
+        multi_exchange.last_kline_sources = ["binance"]
         return rows
+    multi_exchange.last_kline_sources = ["poloniex"]
     return get_klines(SYMBOL, KLINE_INTERVAL, limit=KLINE_LIMIT)
 
 

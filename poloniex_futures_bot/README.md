@@ -14,11 +14,13 @@ Python 实现的 Poloniex BTC 永续合约自动交易机器人：单向持仓�
   - **ema_cross**：EMA 快/慢线金叉死叉 + ATR 过滤（原逻辑）
   - **macd**：MACD 线与信号线交叉，可选 ATR 过滤弱信号
   - **rsi**：RSI 超卖做多、超买做空（阈值可配）
-  - **composite**：5m EMA 定方向 + 近 3 根动量入场 + 币安/Coinbase 盘口确认；K 线优先币安永续，Freqtrade 只要求 EMA/MACD 同向
+  - **composite**：1h EMA20/60 定方向 + 近 3 根动量 ≥0.3% 入场 + Freqtrade EMA/MACD 同向确认；K 线为 `KLINE_SOURCES` 多所中位数共识（不足则回退币安、Poloniex），信号只用已收盘 K 线（`SIGNAL_ON_CLOSED_BARS`）
   - **consensus**：多交易所 BTC 永续共识，按 24h 成交额加权，pressure = a×动量 + b×OI 变化 - c×资金费率，超阈值开多/开空
 - **仓位**：权益的 10%（可配）
 - **风控**：连续亏损达上限进入冷静期（到点自动复位，非永久熔断）；当日亏损达权益比例上限停机。离场（止损/止盈/最大持仓）不受停机影响
 - **日志**：`logs/trades.jsonl` 每笔交易一条，含 pnl、持仓时长、手续费/资金费、MFE/MAE 与信号质量分项，供归因与参数标定；`logs/decision_journal.jsonl` 为逐轮快照，空转轮次降频并按体积轮转
+- **状态落盘**：`logs/runtime_state.json` 保存 Paper 权益/持仓、风控计数与未平仓交易，重启后续跑而不是回到初始本金；要归零就删掉它
+- **回测**：`python3 backtest.py` 用币安历史 K 线回放当前 config（信号 + 离场 + 风控 + 手续费），按分界日输出样本内/样本外结果，改参数前后各跑一次对照
 - **模拟交易模式**（`SIMULATE_ONLY=True`）：不配置 API Key，仅用公开 K 线自动多空决策；全仓 30 倍；每次决策后发 Telegram、写 Redis 记录交易价格
 
 ## 目录结构
@@ -37,6 +39,8 @@ poloniex_futures_bot/
 ├── notify.py        # 模拟交易：Telegram 通知 + Redis 记录
 ├── decision_journal.py  # 逐轮决策快照 logs/decision_journal.jsonl（空转降频、按体积轮转）
 ├── trade_journal.py     # 逐笔交易结果 logs/trades.jsonl（pnl / MFE / MAE / 质量分项）
+├── state_store.py       # 运行状态落盘 logs/runtime_state.json
+├── backtest.py          # 用币安历史 K 线回放当前 config
 ├── main.py          # 主循环
 ├── requirements.txt
 └── README.md

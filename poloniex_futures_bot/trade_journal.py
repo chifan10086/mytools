@@ -78,6 +78,17 @@ class TradeRecorder:
         if path:
             logger.info("交易日志: %s（开仓/平仓各写一行；未成交则为空文件）", path)
 
+    _STATE_FIELDS = ("_entry", "_best", "_worst", "_samples", "_fees_at_entry", "_funding_at_entry", "_seq")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self._STATE_FIELDS}
+
+    def restore(self, data: Dict[str, Any]) -> None:
+        """恢复未平仓交易的开仓行与浮动极值，重启后仍能写出对应的平仓行。"""
+        for k in self._STATE_FIELDS:
+            if k in data:
+                setattr(self, k, data[k])
+
     def open_trade(
         self,
         side: str,

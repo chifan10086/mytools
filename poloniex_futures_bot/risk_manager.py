@@ -151,6 +151,35 @@ class RiskManager:
         
         return 1.0
     
+    _STATE_FIELDS = (
+        "consecutive_losses",
+        "daily_pnl",
+        "daily_reset_ts",
+        "cooldown_until_ts",
+        "total_trades",
+        "winning_trades",
+        "losing_trades",
+        "total_profit",
+        "total_loss",
+        "max_win",
+        "max_loss",
+        "peak_equity",
+        "max_drawdown",
+        "current_drawdown",
+        "recent_trades",
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self._STATE_FIELDS}
+
+    def restore(self, data: Dict[str, Any]) -> None:
+        for k in self._STATE_FIELDS:
+            if k in data:
+                v = data[k]
+                if k == "recent_trades" and isinstance(v, list):
+                    v = [tuple(x) for x in v]
+                setattr(self, k, v)
+
     def get_statistics(self) -> Dict[str, Any]:
         """获取完整统计数据"""
         return {

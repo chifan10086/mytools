@@ -1,5 +1,5 @@
 # Poloniex BTC 永续合约机器人配置
-# 合约短线：5m + composite（EMA方向 + 近3根动量）+ 盘口确认 + Freqtrade 同向
+# 1h composite（EMA20/60 定方向 + 近 3 根动量 ≥0.4% 入场）+ Freqtrade EMA/MACD 同向确认，止损 0.8% / 止盈 1.6%
 
 # API（在 Poloniex 后台创建，需开通期货交易权限）
 API_KEY = ""
@@ -7,8 +7,15 @@ API_SECRET = ""
 
 # 交易对与周期
 SYMBOL = "BTC_USDT_PERP"
-KLINE_INTERVAL = "MINUTE_5"
+# 1h：回放 2026-06～10 的币安 K 线，5m/15m 下 composite 在所有参数组合里都是负收益
+# （手续费约占本金 40%/4 个月）；1h 把交易频次从 4 笔/天降到 0.5 笔/天，手续费占比降到 1/10。
+KLINE_INTERVAL = "HOUR_1"
 KLINE_LIMIT = 200
+# 信号用 K 线来源：多家交易所 BTC 永续 K 线逐根取中位数合成（单家插针/断流被平掉），不足 KLINE_MIN_SOURCES 家
+# 时回退币安单家，再回退 Poloniex。1h 回放：共识 K 线样本内 +42.7%，六家单独跑在 +29%～+40% 之间。
+# kucoin 与共识价偏差最大（中位 1.1bp，其他 0.2～0.35bp），不放入。
+KLINE_SOURCES = ["binance", "bybit", "okx", "gate", "mexc"]
+KLINE_MIN_SOURCES = 3
 
 # 策略选择：auto | hf | ema_cross | macd | rsi | composite | consensus | mtf | freqtrade
 STRATEGY = "composite"
@@ -61,7 +68,8 @@ RSI_NEUTRAL_HIGH = 58
 # 组合短线：EMA 定方向后，用近 N 根动量入场（不再死等金叉）
 COMPOSITE_ALLOW_TREND_FOLLOW = True
 MOMENTUM_BARS = 3
-MOMENTUM_MIN_RATIO = 0.002
+# 1h 下 3 根动量门槛 0.3%：0.3/0.4 回放结果相近，取低的多出手；0.8% 以上信号过少
+MOMENTUM_MIN_RATIO = 0.003
 MOMENTUM_LOOKBACK_BARS = 6
 
 # 多交易所共识策略（consensus）
@@ -108,21 +116,27 @@ AUTO_STRATEGY_RANGING = "composite"
 AUTO_STRATEGY_HIGH_VOLATILITY = "composite"
 AUTO_STRATEGY_EXTREME = "composite"
 
-# 止损止盈：5m BTC 的 ATR 约 0.20%，各取 3×ATR。
-# 旧值 SL=2×ATR 落在噪声带里，23 笔止损的 MAE 全部集中在 -0.40%~-0.50%
-STOP_LOSS_RATIO = 0.006
-TAKE_PROFIT_RATIO = 0.006
+# 止损止盈 1:2。1:1 时扣掉 0.10% 双边手续费后实际是 0.5 : 0.7，胜率要 58% 才打平（实盘 39%）。
+# 1h 回放：sl0.5~0.8 / tp=2×sl 的邻域全部为正，0.8/1.6 的 PF 最高（样本内 2.2、样本外 1.8）。
+STOP_LOSS_RATIO = 0.008
+TAKE_PROFIT_RATIO = 0.016
 # 0 = 不以持仓时间平仓。离场只走止损、止盈、反向信号、浮盈回撤。
 MAX_HOLD_CYCLES = 0
-# 浮盈保护：曾达到 ARM 后回落到 LOCK 就提前平，避免把浮盈吐成亏损。
-# 28 笔超时单里多笔 MFE 在 0.25%～0.45%，出场却是亏的。
-MAX_HOLD_ARM_RATIO = 0.0025
+# True：信号只用已收盘 K 线（丢掉最后一根未收盘的），标价仍取最新价。
+# 1h 周期下每分钟轮询，盘中半根 K 线会让动量/EMA 反复跳变；回测也是按收盘算的。
+SIGNAL_ON_CLOSED_BARS = True
+# 运行状态落盘：Paper 权益/持仓、风控计数、未平仓交易。重启不再回到 INITIAL_EQUITY；想归零就删这个文件。
+RUNTIME_STATE_PATH = "logs/runtime_state.json"
+# 浮盈保护：曾达到 ARM 后回落到 LOCK 就提前平。ARM=0 关闭。旧值 LOCK 0.10% 低于双边手续费 0.10%，11 笔「浮盈保护」平均只赚 4.3 USDT；
+# 回放里任何 ARM/LOCK 组合都比不加差。
+MAX_HOLD_ARM_RATIO = 0
 MAX_HOLD_LOCK_RATIO = 0.001
 
 # 仓位与风控
 POSITION_EQUITY_RATIO = 0.08
-MAX_CONSECUTIVE_LOSSES = 2
-DAILY_LOSS_RATIO = 0.04
+# 只防极端情况，不作为日常限频：1h 回放里连亏 2 停 4h 与连亏 3 停、日亏 4% 与 6% 结果几乎一样
+MAX_CONSECUTIVE_LOSSES = 3
+DAILY_LOSS_RATIO = 0.06
 # 单笔风险预算：触发止损时（含开平双边手续费）最多亏掉的权益比例
 # 名义仓位 = 权益 × RISK_PER_TRADE / (STOP_LOSS_RATIO + 2×手续费率)，并受 LEVERAGE 上限约束
 RISK_PER_TRADE = 0.015
@@ -130,9 +144,14 @@ RISK_PER_TRADE = 0.015
 CONSECUTIVE_LOSS_COOLDOWN_SEC = 14400
 
 # 开仓门禁
-ENTRY_MIN_SIGNAL_QUALITY = 0.42
-ENTRY_MIN_SIGNAL_QUALITY_REVERSE = 0.52
-ENTRY_REQUIRE_CROSS_PRESSURE_ALIGN = True
+# 0 = 关闭。106 笔实盘样本里 quality 与盈亏无关（q=0.9 胜率 25%，q=0.45 胜率 34%）；
+# 回放中 0.42 门禁把 1h 平均收益从 +16.9% 砍到 +4.9%，只是在随机删单。策略内部仍保留 <0.3 的硬过滤。
+ENTRY_MIN_SIGNAL_QUALITY = 0
+ENTRY_MIN_SIGNAL_QUALITY_REVERSE = 0
+# 策略内部的质量硬过滤（原来写死 0.3）。0 = 关闭：1h 回放关掉后样本内 +22%→+33%、样本外 +5%→+8%，多出手反而更好
+SIGNAL_MIN_QUALITY = 0
+# False：106 笔样本里 pressure 同向的单（72 笔）胜率 36%，反向的（34 笔）胜率 44%，不携带信息
+ENTRY_REQUIRE_CROSS_PRESSURE_ALIGN = False
 # 仅当 |global_pressure| 达到该值且与方向相反时拦截；弱压力当噪声
 # 旧值 0.02 超过 |global_pressure| 实际最大值 0.0166，该门禁 61 笔交易从未触发；
 # 0.0025 取 C=5 下 |gp| 的 p90，仅拦明显反向
@@ -140,7 +159,8 @@ ENTRY_CROSS_PRESSURE_MIN_ALIGN = 0.0025
 ENTRY_CROSS_PRESSURE_FAIL_OPEN = True
 ENTRY_CROSS_MIN_EXCHANGES_OK = 4
 # 盘口：币安永续 + Coinbase/Kraken。≥2 所时需至少 2 所同向（|imb|≥门槛），避免三所平均互相抵消
-ENTRY_REQUIRE_BOOK_ALIGN = True
+# False：盘口同向的单（77 笔）胜率 36%，中性/反向的（29 笔）胜率 45%；门禁拦掉的 53 次只是随机删单
+ENTRY_REQUIRE_BOOK_ALIGN = False
 ENTRY_BOOK_EXCHANGES = ["binance", "coinbase", "kraken"]
 ENTRY_BOOK_LIMIT = 20
 ENTRY_BOOK_MIN_IMBALANCE = 0.03

@@ -9,6 +9,7 @@
 国内等网络环境若 binance/bybit 等超时，可在 config 设置 CCXT_PROXY（http/https/socks5 URL）。
 """
 import logging
+import statistics
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
@@ -327,6 +328,11 @@ def fetch_binance_klines(interval: str, limit: int) -> List[List]:
     except Exception as e:
         logger.warning("binance K 线失败: %s", e)
         return []
+    return _to_poloniex_rows(raw)
+
+
+def _to_poloniex_rows(raw: List[List[Any]]) -> List[List]:
+    """ccxt [ts,o,h,l,c,vol] → Poloniex [l,h,o,c,amt,qty,tC,sT,cT]。"""
     out: List[List] = []
     for row in raw or []:
         if not row or len(row) < 6:
@@ -337,6 +343,72 @@ def fetch_binance_klines(interval: str, limit: int) -> List[List]:
         amt = vol * c if c > 0 else 0.0
         out.append([l, h, o, c, amt, vol, 0, ts_i, ts_i])
     return out
+
+
+def merge_consensus_klines(rows_by_exchange: Dict[str, List[List[Any]]], min_sources: int) -> List[List]:
+    """
+    多所 ccxt K 线按时间戳对齐，逐根取 o/h/l/c 中位数、成交量求和，返回 Poloniex 格式。
+    只保留至少 min_sources 家都有的时间戳；单一交易所的插针/断流被中位数平掉。
+    """
+    by_ts: Dict[int, List[List[Any]]] = {}
+    for rows in rows_by_exchange.values():
+        for r in rows or []:
+            if r and len(r) >= 6:
+                by_ts.setdefault(int(r[0]), []).append(r)
+    merged: List[List[Any]] = []
+    for ts in sorted(by_ts):
+        rs = by_ts[ts]
+        if len(rs) < max(1, min_sources):
+            continue
+        merged.append(
+            [
+                ts,
+                statistics.median(float(r[1]) for r in rs),
+                statistics.median(float(r[2]) for r in rs),
+                statistics.median(float(r[3]) for r in rs),
+                statistics.median(float(r[4]) for r in rs),
+                sum(float(r[5]) for r in rs),
+            ]
+        )
+    return _to_poloniex_rows(merged)
+
+
+# 最近一次 fetch_consensus_klines 实际用到的交易所，供决策日志记录
+last_kline_sources: List[str] = []
+
+
+def fetch_consensus_klines(interval: str, limit: int, exchanges: List[str], min_sources: int = 1) -> List[List]:
+    """并行拉各所 BTC 永续 K 线并合成共识 K 线（见 merge_consensus_klines）。不足 min_sources 家返回 []。"""
+    global last_kline_sources
+    tf = _INTERVAL_TO_TF.get((interval or "").strip().upper(), "5m")
+    ids = [(e or "").strip().lower() for e in exchanges]
+    ids = [e for e in ids if e]
+
+    def _one(name: str) -> Optional[List[List[Any]]]:
+        ex = _get_exchange(name)
+        if ex is None:
+            return None
+        try:
+            return ex.fetch_ohlcv(_SYMBOL, timeframe=tf, limit=limit)
+        except Exception as e:
+            logger.warning("%s K 线失败: %s", name, e)
+            return None
+
+    rows_by_ex: Dict[str, List[List[Any]]] = {}
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(ids)))) as pool:
+        futs = {pool.submit(_one, eid): eid for eid in ids}
+        for fut in as_completed(futs):
+            try:
+                rows = fut.result()
+            except Exception:
+                rows = None
+            if rows:
+                rows_by_ex[futs[fut]] = rows
+    last_kline_sources = sorted(rows_by_ex)
+    if len(rows_by_ex) < max(1, min_sources):
+        logger.warning("共识 K 线来源不足 %d/%d: %s", len(rows_by_ex), min_sources, last_kline_sources)
+        return []
+    return merge_consensus_klines(rows_by_ex, min_sources)[-limit:]
 
 
 def volume_weights(records: List[Dict[str, Any]]) -> List[float]:

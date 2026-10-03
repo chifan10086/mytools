@@ -46,10 +46,12 @@ from exchange import (
 )
 from notify import notify_trade, notify_close, save_equity_redis, notify_hourly_pnl_report
 from rest_client import get_market_funding_rate
+import multi_exchange
 from multi_exchange import snapshot_major_order_books
 from decision_journal import append_cycle_journal, prefetch_cross_exchange_for_cycle
 from entry_gates import passes_entry_gates, will_open_or_reverse
 from trade_journal import TradeRecorder
+from state_store import load_state, save_state
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -69,6 +71,74 @@ _last_signal_quality: Optional[float] = None  # 最近信号质量
 
 def _telegram_enabled() -> bool:
     return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID is not None)
+
+
+_INTERVAL_SECONDS = {
+    "MINUTE_1": 60,
+    "MINUTE_5": 300,
+    "MINUTE_10": 600,
+    "MINUTE_15": 900,
+    "MINUTE_30": 1800,
+    "HOUR_1": 3600,
+    "HOUR_2": 7200,
+    "HOUR_4": 14400,
+    "HOUR_6": 21600,
+    "HOUR_12": 43200,
+    "DAY_1": 86400,
+}
+
+
+def _drop_open_bar(o: list, h: list, l: list, c: list, t: list) -> tuple:
+    """SIGNAL_ON_CLOSED_BARS 时去掉最后一根未收盘 K 线：信号只看已收盘数据，与回测一致，避免盘中反复跳变。"""
+    if not getattr(_cfg, "SIGNAL_ON_CLOSED_BARS", False) or len(t) != len(c) or len(c) < 3:
+        return o, h, l, c
+    sec = _INTERVAL_SECONDS.get(str(getattr(_cfg, "KLINE_INTERVAL", "")).strip().upper())
+    if sec and t[-1] / 1000.0 + sec > time.time():
+        return o[:-1], h[:-1], l[:-1], c[:-1]
+    return o, h, l, c
+
+
+def _restore_state(path: str, paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecorder) -> None:
+    """启动时从 RUNTIME_STATE_PATH 恢复 Paper 权益/持仓、风控计数与未平仓交易，重启不再归零。"""
+    global _position_entry_time, _position_peak_ratio, _position_peak_for, _cycles_with_position
+    st = load_state(path)
+    if not st:
+        return
+    if paper is not None and isinstance(st.get("paper"), dict):
+        paper.restore(st["paper"])
+    if isinstance(st.get("risk"), dict):
+        risk.restore(st["risk"])
+    if isinstance(st.get("trades"), dict):
+        trades.restore(st["trades"])
+    m = st.get("main") or {}
+    _position_entry_time = m.get("position_entry_time")
+    _position_peak_ratio = float(m.get("position_peak_ratio") or 0.0)
+    _position_peak_for = m.get("position_peak_for")
+    _cycles_with_position = int(m.get("cycles_with_position") or 0)
+    if paper is not None:
+        logger.info(
+            "已从 %s 恢复：权益 %.2f 持仓 %s %.6f", path, paper.get_equity(), paper.position_side, paper.position_size
+        )
+
+
+def _persist_state(path: str, paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecorder) -> None:
+    if not path:
+        return
+    save_state(
+        path,
+        {
+            "saved_at": time.time(),
+            "paper": paper.to_dict() if paper is not None else None,
+            "risk": risk.to_dict(),
+            "trades": trades.to_dict(),
+            "main": {
+                "position_entry_time": _position_entry_time,
+                "position_peak_ratio": _position_peak_ratio,
+                "position_peak_for": _position_peak_for,
+                "cycles_with_position": _cycles_with_position,
+            },
+        },
+    )
 
 
 def _resolve_funding_rate() -> float:
@@ -217,12 +287,14 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
             jm["abort"] = "no_klines"
             jm["action"] = "abort_no_klines"
             return
-        o, h, l, c, _ = parse_klines(data)
+        o, h, l, c, t = parse_klines(data)
         if len(c) < 2:
             jm["abort"] = "insufficient_bars"
             jm["action"] = "abort_insufficient_bars"
             return
         mark_price = c[-1]
+        o, h, l, c = _drop_open_bar(o, h, l, c, t)
+        jm["kline_sources"] = list(multi_exchange.last_kline_sources)
         jm.update(
             {
                 "o": o,
@@ -639,6 +711,8 @@ def main() -> None:
     )
     risk = RiskManager()
     trades = TradeRecorder()
+    state_path = str(getattr(_cfg, "RUNTIME_STATE_PATH", "") or "")
+    _restore_state(state_path, paper, risk, trades)
 
     if SIMULATE_ONLY:
         logger.info("模拟交易模式：不配置 Key，自动多空决策，全仓 %s 倍，Telegram + Redis", LEVERAGE)
@@ -661,6 +735,7 @@ def main() -> None:
                 logger.info("Paper 权益 ≈ %.2f", paper.get_equity())
         except Exception as e:
             logger.exception("run_once error: %s", e)
+        _persist_state(state_path, paper, risk, trades)
         time.sleep(interval_sec)
 
 

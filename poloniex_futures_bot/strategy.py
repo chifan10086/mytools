@@ -64,6 +64,7 @@ from config import (
     AUTO_STRATEGY_RANGING,
     AUTO_STRATEGY_HIGH_VOLATILITY,
     AUTO_STRATEGY_EXTREME,
+    SIGNAL_MIN_QUALITY,
 )
 from freqtrade_advisory import compute_freqtrade_signal, freqtrade_trend_align
 
@@ -862,13 +863,13 @@ def compute_signal(
     # 计算信号质量
     quality, quality_parts = _calculate_signal_quality(opens, highs, lows, closes, bd)
 
-    # 低质量信号过滤
-    if bd != 0 and quality < 0.3:
+    # 低质量信号过滤（SIGNAL_MIN_QUALITY=0 关闭）
+    if bd != 0 and SIGNAL_MIN_QUALITY > 0 and quality < SIGNAL_MIN_QUALITY:
         return (
             0,
             None,
             None,
-            br + f"\n\n【信号质量过滤】质量评分 {quality:.2f} < 0.3，信号太弱",
+            br + f"\n\n【信号质量过滤】质量评分 {quality:.2f} < {SIGNAL_MIN_QUALITY}，信号太弱",
             quality,
             quality_parts,
         )
