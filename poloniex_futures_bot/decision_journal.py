@@ -37,6 +37,7 @@ _IDLE_ACTIONS = frozenset(
         "flat_no_signal",
         "hold_same_direction_no_add",
         "skip_entry_gate",
+        "skip_same_signal_bar",
         "skip_zero_size",
     }
 )

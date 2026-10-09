@@ -67,6 +67,10 @@ _hour_start_equity: Optional[float] = None
 _last_hourly_report_time = 0.0
 _position_entry_time: Optional[float] = None  # 开仓时间戳
 _last_signal_quality: Optional[float] = None  # 最近信号质量
+# 上次开仓所用信号 K 线的起始时间（ms）。同一根已收盘 K 线只允许开一次仓：
+# 1h 周期下每分钟轮询，盘中被止损后信号仍是那根旧 K 线算出来的，不拦会在 1 分钟内原方向重开
+# （2026-10-06 15:52 止损、15:53 重开，同一信号亏两次）；回测每根 K 线只决策一次，不存在这种重开。
+_last_entry_signal_bar_ts: Optional[int] = None
 
 
 def _telegram_enabled() -> bool:
@@ -101,6 +105,7 @@ def _drop_open_bar(o: list, h: list, l: list, c: list, t: list) -> tuple:
 def _restore_state(path: str, paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecorder) -> None:
     """启动时从 RUNTIME_STATE_PATH 恢复 Paper 权益/持仓、风控计数与未平仓交易，重启不再归零。"""
     global _position_entry_time, _position_peak_ratio, _position_peak_for, _cycles_with_position
+    global _last_entry_signal_bar_ts
     st = load_state(path)
     if not st:
         return
@@ -115,6 +120,7 @@ def _restore_state(path: str, paper: Optional[PaperEngine], risk: RiskManager, t
     _position_peak_ratio = float(m.get("position_peak_ratio") or 0.0)
     _position_peak_for = m.get("position_peak_for")
     _cycles_with_position = int(m.get("cycles_with_position") or 0)
+    _last_entry_signal_bar_ts = m.get("last_entry_signal_bar_ts")
     if paper is not None:
         logger.info(
             "已从 %s 恢复：权益 %.2f 持仓 %s %.6f", path, paper.get_equity(), paper.position_side, paper.position_size
@@ -136,6 +142,7 @@ def _persist_state(path: str, paper: Optional[PaperEngine], risk: RiskManager, t
                 "position_peak_ratio": _position_peak_ratio,
                 "position_peak_for": _position_peak_for,
                 "cycles_with_position": _cycles_with_position,
+                "last_entry_signal_bar_ts": _last_entry_signal_bar_ts,
             },
         },
     )
@@ -277,7 +284,7 @@ def _entry_context(
 
 def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecorder) -> None:
     global _cycles_with_position, _last_decision_rationale, _position_entry_time, _last_signal_quality
-    global _position_peak_ratio, _position_peak_for
+    global _position_peak_ratio, _position_peak_for, _last_entry_signal_bar_ts
     jm: Dict[str, Any] = {"unix_ts": time.time()}
     try:
         # 1. K 线
@@ -294,6 +301,8 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
             return
         mark_price = c[-1]
         o, h, l, c = _drop_open_bar(o, h, l, c, t)
+        signal_bar_ts = t[len(c) - 1] if len(t) >= len(c) else None
+        jm["signal_bar_ts"] = signal_bar_ts
         jm["kline_sources"] = list(multi_exchange.last_kline_sources)
         jm.update(
             {
@@ -478,6 +487,12 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
             return
 
         if will_open_or_reverse(direction, pos_side):
+            if signal_bar_ts is not None and signal_bar_ts == _last_entry_signal_bar_ts:
+                jm["action"] = "skip_same_signal_bar"
+                logger.info("同一根信号 K 线已开过仓，等下一根收盘再评估")
+                if paper:
+                    save_equity_redis(equity, INITIAL_EQUITY)
+                return
             ok_gate, gate_reason = passes_entry_gates(
                 direction, signal_quality, pos_side, jm.get("cross_exchange"), jm.get("order_book")
             )
@@ -488,6 +503,10 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
                 if paper:
                     save_equity_redis(equity, INITIAL_EQUITY)
                 return
+            _last_entry_signal_bar_ts = signal_bar_ts
+            # 策略给的 sl/tp 以信号 K 线收盘价为基准，实际按 mark_price 成交；离场判定用的是成交价×比例，
+            # 这里按成交价重算，日志与通知里的止损止盈才和真实触发价一致
+            sl, tp = strategy._sl_tp_long(mark_price) if direction == 1 else strategy._sl_tp_short(mark_price)
 
         if pos_side == "LONG" and direction == -1:
             hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
