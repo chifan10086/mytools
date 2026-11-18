@@ -3,14 +3,19 @@
 用币安 BTC 永续历史 K 线回放「当前 config」：strategy.compute_signal + main.py 的离场与风控逻辑。
 改参数前后各跑一次，看样本内/样本外是否同向，再决定上线。
 
-    python3 backtest.py                       # 最近 120 天，2026-09-01 前后分成样本内/外
-    python3 backtest.py --days 90 --split 2026-08-15
+    python3 backtest.py                       # 最近 1400 天，按年列结果；--split 那天之后算样本外
+    python3 backtest.py --days 2000 --split 2026-08-15
     python3 backtest.py --exchanges binance,bybit,okx,bitget,gate   # 同一配置在多家 K 线上各跑一遍，看结论是否一致
     python3 backtest.py --consensus           # 按 config.KLINE_SOURCES 合成共识 K 线回放（与实盘数据路径一致）
 
 约定：信号只在已收盘 K 线上计算（同 SIGNAL_ON_CLOSED_BARS=True），在该根收盘价成交；
-止损/止盈按下一根起的高低点判定，同根同时触及按止损算（偏保守）；浮盈保护与最大持仓按收盘价判定；
-手续费双边 Taker，不计资金费；盘口 / 多所压力 / 新闻门禁无法回放，按放行处理。
+止损距离在开仓那根按 strategy.entry_stop_ratio 定死（STOP_LOSS_ATR_MULT×ATR 或固定比例），仓位按它反推；
+止损/止盈按下一根起的高低点判定，同根同时触及按止损算（偏保守），开盘就已越过止损价时按开盘价成交；
+TAKE_PROFIT_RATIO=0 时不设止盈，只靠止损和反向信号离场；浮盈保护与最大持仓按收盘价判定；
+手续费双边 Taker，不计资金费（趋势单持仓几天到几周，实盘会比回测少一截）；盘口 / 多所压力 / 新闻门禁无法回放，按放行处理。
+
+改参数先看长周期：默认回放 1400 天并按年列出结果。只看最近 120 天会挑中恰好表现最好的窗口——
+2026-10-03 那次调参（composite 0.8%/1.6%）在 120 天里 +42%，放到 2023～2025 每年都亏。
 """
 import argparse
 import collections
@@ -25,7 +30,7 @@ import risk_manager
 from entry_gates import passes_entry_gates, will_open_or_reverse
 from exchange import position_size_by_risk
 from multi_exchange import _INTERVAL_TO_TF, _SYMBOL, _get_exchange, merge_consensus_klines
-from strategy import compute_signal
+from strategy import compute_signal, entry_stop_ratio, exit_levels
 
 _TF_SEC = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400}
 
@@ -94,6 +99,8 @@ def run(rows: List[List[float]], equity0: float) -> Tuple[float, List[Dict]]:
                 "side": pos["side"],
                 "reason": reason,
                 "pnl": pnl,
+                # 这一笔的净盈亏：再扣掉开仓手续费（开仓时已从权益里扣过，所以 pnl 里没有它）。报表都用这个数
+                "net": pnl - pos["fee_open"],
                 "fees": fee_close + pos["fee_open"],
                 "move": (px - pos["entry"]) / pos["entry"] * sign,
                 "hold_bars": i - pos["i"],
@@ -102,26 +109,27 @@ def run(rows: List[List[float]], equity0: float) -> Tuple[float, List[Dict]]:
         )
         pos = None
 
-    def open_(side: str, px: float, i: int) -> None:
+    def open_(side: str, px: float, i: int, stop_ratio: float) -> None:
         nonlocal equity, pos
         size = position_size_by_risk(
-            equity, px, cfg.RISK_PER_TRADE, cfg.STOP_LOSS_RATIO, fee, cfg.LEVERAGE
+            equity, px, cfg.RISK_PER_TRADE, stop_ratio, fee, cfg.LEVERAGE
         ) * risk.suggest_position_scale()
         fee_open = size * px * fee
         equity -= fee_open
-        pos = {"side": side, "entry": px, "size": size, "i": i, "peak": 0.0, "fee_open": fee_open}
+        sl_px, tp_px = exit_levels(side, px, stop_ratio)
+        pos = {"side": side, "entry": px, "size": size, "i": i, "peak": 0.0, "fee_open": fee_open, "sl": sl_px, "tp": tp_px}
 
     for i in range(window - 1, len(c)):
         clock.t = ts[i]
         if pos is not None:
             side, entry = pos["side"], pos["entry"]
             sign = 1.0 if side == "LONG" else -1.0
-            sl_px = entry * (1 - sign * cfg.STOP_LOSS_RATIO)
-            tp_px = entry * (1 + sign * cfg.TAKE_PROFIT_RATIO)
+            sl_px, tp_px = pos["sl"], pos["tp"]
             hit_sl = l[i] <= sl_px if side == "LONG" else h[i] >= sl_px
-            hit_tp = h[i] >= tp_px if side == "LONG" else l[i] <= tp_px
+            hit_tp = tp_px is not None and (h[i] >= tp_px if side == "LONG" else l[i] <= tp_px)
             if hit_sl:
-                close(sl_px, "stop_loss", i)
+                # 开盘就已经越过止损价（跳空）时成交不到止损价，按开盘价算
+                close(min(sl_px, o[i]) if side == "LONG" else max(sl_px, o[i]), "stop_loss", i)
             elif hit_tp:
                 close(tp_px, "take_profit", i)
             if pos is not None:
@@ -144,7 +152,7 @@ def run(rows: List[List[float]], equity0: float) -> Tuple[float, List[Dict]]:
             continue
         if pos is not None:
             close(c[i], "reverse", i)
-        open_("LONG" if direction == 1 else "SHORT", c[i], i)
+        open_("LONG" if direction == 1 else "SHORT", c[i], i, entry_stop_ratio(h[s], l[s], c[s]))
     return equity, trades
 
 
@@ -152,7 +160,7 @@ def summarize(label: str, trades: List[Dict], equity0: float) -> None:
     if not trades:
         print(f"{label}: 无交易")
         return
-    pnl = [t["pnl"] for t in trades]
+    pnl = [t["net"] for t in trades]
     wins = [p for p in pnl if p > 0]
     losses = [p for p in pnl if p <= 0]
     pf = sum(wins) / -sum(losses) if losses and sum(losses) < 0 else float("inf")
@@ -162,8 +170,8 @@ def summarize(label: str, trades: List[Dict], equity0: float) -> None:
         mdd = max(mdd, (peak - t["equity"]) / peak)
     days = max(1.0, (trades[-1]["ts"] - trades[0]["ts"]) / 86400)
     reasons = " ".join(f"{k}={v}" for k, v in collections.Counter(t["reason"] for t in trades).most_common())
-    longs = [t["pnl"] for t in trades if t["side"] == "LONG"]
-    shorts = [t["pnl"] for t in trades if t["side"] == "SHORT"]
+    longs = [t["net"] for t in trades if t["side"] == "LONG"]
+    shorts = [t["net"] for t in trades if t["side"] == "SHORT"]
     print(
         f"{label}: n={len(trades)} ({len(trades)/days:.1f}笔/天) 收益={sum(pnl)/equity0*100:+.1f}% "
         f"胜率={len(wins)/len(trades):.0%} PF={pf:.2f} 最大回撤={mdd:.1%} 手续费={sum(t['fees'] for t in trades):.0f} "
@@ -173,8 +181,9 @@ def summarize(label: str, trades: List[Dict], equity0: float) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--days", type=int, default=120)
-    ap.add_argument("--split", default="2026-09-01", help="样本内/外分界日 (UTC)")
+    ap.add_argument("--days", type=int, default=1400, help="回放天数；改参数至少看 3 年，别只看最近几个月")
+    # 默认取当前这套参数定下来的日子：之前的数据都参与过挑参数，只有之后的才算真正的样本外
+    ap.add_argument("--split", default="2026-11-18", help="样本内/外分界日 (UTC)")
     ap.add_argument("--equity", type=float, default=float(cfg.INITIAL_EQUITY))
     ap.add_argument(
         "--exchanges",
@@ -184,9 +193,12 @@ def main() -> None:
     ap.add_argument("--consensus", action="store_true", help="用 config.KLINE_SOURCES 合成共识 K 线跑一遍")
     args = ap.parse_args()
 
+    atr_mult = float(getattr(cfg, "STOP_LOSS_ATR_MULT", 0) or 0)
+    sl_desc = f"{atr_mult}×ATR{cfg.ATR_PERIOD}" if atr_mult > 0 else str(cfg.STOP_LOSS_RATIO)
+    tp_desc = str(cfg.TAKE_PROFIT_RATIO) if cfg.TAKE_PROFIT_RATIO > 0 else "不设"
     print(
         f"策略={cfg.STRATEGY} 周期={cfg.KLINE_INTERVAL} 动量≥{cfg.MOMENTUM_MIN_RATIO} "
-        f"SL={cfg.STOP_LOSS_RATIO} TP={cfg.TAKE_PROFIT_RATIO} ARM={cfg.MAX_HOLD_ARM_RATIO} "
+        f"SL={sl_desc} TP={tp_desc} ARM={cfg.MAX_HOLD_ARM_RATIO} "
         f"MAX_HOLD={cfg.MAX_HOLD_CYCLES} minQ={cfg.ENTRY_MIN_SIGNAL_QUALITY} FT={cfg.FREQTRADE_CONFIRM}"
     )
     fmt = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d")
@@ -225,14 +237,22 @@ def report(rows: List[List[float]], args: argparse.Namespace) -> None:
     base_os = is_tr[-1]["equity"] if is_tr else args.equity
     summarize(f"样本内 <{args.split}", is_tr, args.equity)
     summarize(f"样本外 >={args.split}", os_tr, base_os)
+    # 按年：每一年单独看，哪一年是亏的一眼能看出来（收益率以该年年初的权益为基数）
+    by_year: Dict[str, List[Dict]] = collections.defaultdict(list)
+    for t in trades:
+        by_year[datetime.fromtimestamp(t["ts"], timezone.utc).strftime("%Y")].append(t)
+    base = args.equity
+    for y in sorted(by_year):
+        summarize(f"  {y} 年", by_year[y], base)
+        base = by_year[y][-1]["equity"]
     by_month: Dict[str, List[Dict]] = collections.defaultdict(list)
     for t in trades:
         by_month[datetime.fromtimestamp(t["ts"], timezone.utc).strftime("%Y-%m")].append(t)
     for m in sorted(by_month):
         v = by_month[m]
         print(
-            f"  {m}: n={len(v):3d} 盈亏={sum(t['pnl'] for t in v):+8.1f} "
-            f"胜率={sum(1 for t in v if t['pnl'] > 0)/len(v):.0%} 多={sum(1 for t in v if t['side']=='LONG')} 空={sum(1 for t in v if t['side']=='SHORT')}"
+            f"  {m}: n={len(v):3d} 盈亏={sum(t['net'] for t in v):+8.1f} "
+            f"胜率={sum(1 for t in v if t['net'] > 0)/len(v):.0%} 多={sum(1 for t in v if t['side']=='LONG')} 空={sum(1 for t in v if t['side']=='SHORT')}"
         )
     print(f"期末权益 {equity:.2f}（期初 {args.equity:.2f}）")
 

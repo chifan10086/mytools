@@ -1,5 +1,6 @@
 # Poloniex BTC 永续合约机器人配置
-# 1h composite（EMA20/60 定方向 + 近 3 根动量 ≥0.4% 入场）+ Freqtrade EMA/MACD 同向确认，止损 0.8% / 止盈 1.6%
+# 1h ema_cross（EMA20/60 金叉 / 死叉，价离两条均线都超过 1.25×ATR 才算）+ Freqtrade EMA/MACD 同向确认；
+# 止损 3×ATR、不设固定止盈，靠止损或反向信号离场
 
 # API（在 Poloniex 后台创建，需开通期货交易权限）
 API_KEY = ""
@@ -18,7 +19,14 @@ KLINE_SOURCES = ["binance", "bybit", "okx", "gate", "mexc"]
 KLINE_MIN_SOURCES = 3
 
 # 策略选择：auto | hf | ema_cross | macd | rsi | composite | consensus | mtf | freqtrade
-STRATEGY = "composite"
+# 2026-11-18 由 composite 换成 ema_cross。币安 1h K 线 2023-01～2026-11 回放（python3 backtest.py，按年看）：
+#   composite + 固定止损 0.8% / 止盈 1.6%：2023 −31.6%、2024 −34.3%、2025 −34.3%、2026 +39.5%，10000 → 4111。
+#     赚钱的只有 2026-06～10 那 120 天——正是 10-03 调参用的窗口；实盘 10-04～11-16 共 29 笔，净 −13.5。
+#   ema_cross + 3×ATR 止损 + 不设止盈：2023 +29.6%、2024 +73.3%、2025 +4.5%、2026 +15.1%，10000 → 26994，最大回撤 16.7%。
+#     止损倍数取 2 / 3 / 4 都为正，不是只有一个点好看；FREQTRADE_CONFIRM 开不开结果几乎一样。
+# 这套的脾气：约每周 1 笔，胜率只有 30%，利润几乎全来自少数几笔大趋势单（198 笔里最大的 5 笔 ≈ 全部利润），
+# 连亏最长 14 笔，空头基本不赚，震荡的年份（2025）接近白干。回测不含资金费，实盘会少一截（按多空都付 0.01%/8h 估，约少一成多）。
+STRATEGY = "ema_cross"
 FREQTRADE_CONFIRM = True
 
 # Freqtrade 风格参数
@@ -116,11 +124,18 @@ AUTO_STRATEGY_RANGING = "composite"
 AUTO_STRATEGY_HIGH_VOLATILITY = "composite"
 AUTO_STRATEGY_EXTREME = "composite"
 
-# 止损止盈 1:2。1:1 时扣掉 0.10% 双边手续费后实际是 0.5 : 0.7，胜率要 58% 才打平（实盘 39%）。
-# 1h 回放：sl0.5~0.8 / tp=2×sl 的邻域全部为正，0.8/1.6 的 PF 最高（样本内 2.2、样本外 1.8）。
+# 止损：开仓时按波动定距离 = STOP_LOSS_ATR_MULT × ATR(ATR_PERIOD) ÷ 价格，定下后不再移动，不低于 STOP_LOSS_ATR_MIN_RATIO。
+# 1h 下 3×ATR 通常在 1%～3%。仓位按「触发止损亏掉 RISK_PER_TRADE」反推，止损放远时仓位自动变小，每笔最多亏的钱不变。
+# 固定 0.8% 对趋势单太近：同样的 ema_cross 入场，2025 年固定 0.8% 止损累计 −29R，换成 3×ATR 是 +6R（R = 单笔风险）。
+# 0 = 不按波动，用下面固定的 STOP_LOSS_RATIO。
+STOP_LOSS_ATR_MULT = 3.0
+STOP_LOSS_ATR_MIN_RATIO = 0.002
+# 固定止损比例：只在 STOP_LOSS_ATR_MULT=0、或 K 线不够算 ATR 时用
 STOP_LOSS_RATIO = 0.008
-TAKE_PROFIT_RATIO = 0.016
-# 0 = 不以持仓时间平仓。离场只走止损、止盈、反向信号、浮盈回撤。
+# 0 = 不设固定止盈，盈利单一直拿到反向信号或回到止损价。回放里加固定止盈都更差：3×ATR 止损配 3 倍止盈，
+# 四年累计从 +120R 掉到 +44R——利润来自少数大趋势，止盈正好把它们截断。
+TAKE_PROFIT_RATIO = 0
+# 0 = 不以持仓时间平仓。离场只走止损、止盈（设了的话）、反向信号、浮盈回撤。
 MAX_HOLD_CYCLES = 0
 # True：信号只用已收盘 K 线（丢掉最后一根未收盘的），标价仍取最新价。
 # 1h 周期下每分钟轮询，盘中半根 K 线会让动量/EMA 反复跳变；回测也是按收盘算的。
@@ -138,7 +153,7 @@ POSITION_EQUITY_RATIO = 0.08
 MAX_CONSECUTIVE_LOSSES = 3
 DAILY_LOSS_RATIO = 0.06
 # 单笔风险预算：触发止损时（含开平双边手续费）最多亏掉的权益比例
-# 名义仓位 = 权益 × RISK_PER_TRADE / (STOP_LOSS_RATIO + 2×手续费率)，并受 LEVERAGE 上限约束
+# 名义仓位 = 权益 × RISK_PER_TRADE / (这次开仓的止损距离 + 2×手续费率)，并受 LEVERAGE 上限约束
 RISK_PER_TRADE = 0.015
 # 连亏达上限后的冷静期（秒），到点自动复位计数，避免永久停机
 CONSECUTIVE_LOSS_COOLDOWN_SEC = 14400

@@ -203,14 +203,20 @@ def notify_trade(
 
     text = f"<b>{title}</b>  <code>{html.escape(SYMBOL)}</code>\n" + _diff_block(rows)
 
-    if sl is not None and tp is not None:
+    if sl is not None:
         risk = abs(price - sl)
-        rr_ratio = (abs(tp - price) / risk) if risk > 0 else 0
-        text += "\n" + _section("🎯 风险控制", [
-            _row("止盈", f"{tp:.2f}", 1, f"+{abs(tp - price) / price * 100:.2f}%"),
-            _row("止损", f"{sl:.2f}", -1, f"-{abs(price - sl) / price * 100:.2f}%"),
-            _row("风险回报比", f"1:{rr_ratio:.2f}"),
-        ])
+        sl_row = _row("止损", f"{sl:.2f}", -1, f"-{risk / price * 100:.2f}%")
+        if tp is not None:
+            rr_ratio = (abs(tp - price) / risk) if risk > 0 else 0
+            risk_rows = [
+                _row("止盈", f"{tp:.2f}", 1, f"+{abs(tp - price) / price * 100:.2f}%"),
+                sl_row,
+                _row("风险回报比", f"1:{rr_ratio:.2f}"),
+            ]
+        else:
+            # TAKE_PROFIT_RATIO=0：不设固定止盈，盈利单拿到反向信号或回到止损价才走
+            risk_rows = [_row("止盈", "不设", note="等反向信号或止损"), sl_row]
+        text += "\n" + _section("🎯 风险控制", risk_rows)
 
     if current_equity is not None and initial_equity is not None:
         pnl = current_equity - initial_equity

@@ -19,6 +19,8 @@ from config import (
     ATR_FILTER_MULT,
     STOP_LOSS_RATIO,
     TAKE_PROFIT_RATIO,
+    STOP_LOSS_ATR_MULT,
+    STOP_LOSS_ATR_MIN_RATIO,
     MACD_FAST,
     MACD_SLOW,
     MACD_SIGNAL,
@@ -151,12 +153,13 @@ def parse_klines(data: List[List]) -> Tuple[List[float], List[float], List[float
     return o, h, l, c, t
 
 
-def _sl_tp_long(price: float) -> Tuple[float, float]:
-    return price * (1 - STOP_LOSS_RATIO), price * (1 + TAKE_PROFIT_RATIO)
+def _sl_tp_long(price: float) -> Tuple[float, Optional[float]]:
+    """信号里附带的参考止损止盈（固定比例）。实际成交后的止损止盈由 exit_levels 按成交价和开仓时的波动重算。"""
+    return price * (1 - STOP_LOSS_RATIO), (price * (1 + TAKE_PROFIT_RATIO) if TAKE_PROFIT_RATIO > 0 else None)
 
 
-def _sl_tp_short(price: float) -> Tuple[float, float]:
-    return price * (1 + STOP_LOSS_RATIO), price * (1 - TAKE_PROFIT_RATIO)
+def _sl_tp_short(price: float) -> Tuple[float, Optional[float]]:
+    return price * (1 + STOP_LOSS_RATIO), (price * (1 - TAKE_PROFIT_RATIO) if TAKE_PROFIT_RATIO > 0 else None)
 
 
 # ---------- EMA 交叉 ----------
@@ -453,6 +456,11 @@ def _compute_mtf(
     else:
         sl_dist = ltf_price * STOP_LOSS_RATIO
         tp_dist = ltf_price * TAKE_PROFIT_RATIO
+
+    if tp_dist <= 0:  # TAKE_PROFIT_RATIO=0（不设固定止盈）且 ATR 无效：不给止盈价
+        sl = ltf_price - sl_dist if htf_trend == 1 else ltf_price + sl_dist
+        lines.append(f"→ {'做多' if htf_trend == 1 else '做空'} | SL={sl:.2f} 不设止盈")
+        return (1 if htf_trend == 1 else -1), sl, None, "\n".join(lines)
 
     if htf_trend == 1:
         sl = ltf_price - sl_dist
@@ -912,6 +920,45 @@ def compute_signal(
     return bd, bsl, btp, br, quality, quality_parts
 
 
+def entry_stop_ratio(highs: List[float], lows: List[float], closes: List[float]) -> float:
+    """
+    开仓时的止损距离，占价格的比例；开仓后不再移动。
+    STOP_LOSS_ATR_MULT > 0：倍数 × ATR(ATR_PERIOD) ÷ 最新收盘价，不低于 STOP_LOSS_ATR_MIN_RATIO——
+    波动大时止损放远、仓位自动变小（仓位按「触发止损亏掉 RISK_PER_TRADE」反推），波动小时相反。
+    STOP_LOSS_ATR_MULT = 0，或 K 线不够算 ATR：退回固定的 STOP_LOSS_RATIO。
+    """
+    mult = float(STOP_LOSS_ATR_MULT or 0)
+    if mult <= 0 or len(closes) <= ATR_PERIOD or closes[-1] <= 0:
+        return float(STOP_LOSS_RATIO)
+    atr_val = _atr(highs, lows, closes, ATR_PERIOD)[-1]
+    if atr_val <= 0:
+        return float(STOP_LOSS_RATIO)
+    return max(float(STOP_LOSS_ATR_MIN_RATIO), mult * atr_val / closes[-1])
+
+
+def exit_levels(side: str, entry_price: float, stop_ratio: float) -> Tuple[float, Optional[float]]:
+    """按成交价算这笔仓位的止损价和止盈价。TAKE_PROFIT_RATIO <= 0 表示不设固定止盈，止盈价为 None。"""
+    sign = 1.0 if side.upper() == "LONG" else -1.0
+    sl = entry_price * (1 - sign * stop_ratio)
+    tp = entry_price * (1 + sign * TAKE_PROFIT_RATIO) if TAKE_PROFIT_RATIO > 0 else None
+    return sl, tp
+
+
+def check_exit_levels(
+    side: str,
+    current_price: float,
+    sl_price: Optional[float],
+    tp_price: Optional[float],
+) -> Optional[str]:
+    """按这笔仓位自己的止损价 / 止盈价判定，返回 "stop_loss" / "take_profit" / None；价位为 None 的那一边不判。"""
+    is_long = side.upper() == "LONG"
+    if sl_price is not None and (current_price <= sl_price if is_long else current_price >= sl_price):
+        return "stop_loss"
+    if tp_price is not None and (current_price >= tp_price if is_long else current_price <= tp_price):
+        return "take_profit"
+    return None
+
+
 def check_stop_loss_take_profit(
     side: str,
     entry_price: float,
@@ -919,15 +966,8 @@ def check_stop_loss_take_profit(
     stop_loss_ratio: float = STOP_LOSS_RATIO,
     take_profit_ratio: float = TAKE_PROFIT_RATIO,
 ) -> Optional[str]:
-    """返回 "stop_loss" / "take_profit" / None。"""
-    if side.upper() == "LONG":
-        if current_price <= entry_price * (1 - stop_loss_ratio):
-            return "stop_loss"
-        if current_price >= entry_price * (1 + take_profit_ratio):
-            return "take_profit"
-    else:
-        if current_price >= entry_price * (1 + stop_loss_ratio):
-            return "stop_loss"
-        if current_price <= entry_price * (1 - take_profit_ratio):
-            return "take_profit"
-    return None
+    """按固定比例判定（仓位没有记录自己的止损止盈价时兜底用）。take_profit_ratio <= 0 表示不设止盈。"""
+    sign = 1.0 if side.upper() == "LONG" else -1.0
+    sl = entry_price * (1 - sign * stop_loss_ratio)
+    tp = entry_price * (1 + sign * take_profit_ratio) if take_profit_ratio > 0 else None
+    return check_exit_levels(side, current_price, sl, tp)

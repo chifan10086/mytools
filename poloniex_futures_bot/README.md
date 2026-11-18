@@ -11,16 +11,16 @@ Python 实现的 Poloniex BTC 永续合约自动交易机器人：单向持仓�
 - **Paper 模式**：模拟盘，不真实下单
 - **策略（可配置）**：`config.STRATEGY` 选择
   - **hf**：高频，EMA 5/20 金叉死叉、无 ATR 过滤，配 1 分钟 K 线，信号多、不蹲守
-  - **ema_cross**：EMA 快/慢线金叉死叉 + ATR 过滤（原逻辑）
+  - **ema_cross**（当前在用，2026-11-18 起）：1h EMA20/60 金叉做多、死叉做空，价离两条均线都超过 1.25×ATR 才算 + Freqtrade EMA/MACD 同向确认；止损 3×ATR（开仓时定死）、不设固定止盈，靠止损或反向信号离场。约每周 1 笔、胜率约 30%，利润来自少数大趋势单。K 线为 `KLINE_SOURCES` 多所中位数共识（不足则回退币安、Poloniex），信号只用已收盘 K 线（`SIGNAL_ON_CLOSED_BARS`）
   - **macd**：MACD 线与信号线交叉，可选 ATR 过滤弱信号
   - **rsi**：RSI 超卖做多、超买做空（阈值可配）
-  - **composite**：1h EMA20/60 定方向 + 近 3 根动量 ≥0.3% 入场 + Freqtrade EMA/MACD 同向确认；K 线为 `KLINE_SOURCES` 多所中位数共识（不足则回退币安、Poloniex），信号只用已收盘 K 线（`SIGNAL_ON_CLOSED_BARS`）
+  - **composite**（2026-10-03～11-18 用过，已换掉）：1h EMA20/60 定方向 + 近 3 根动量 ≥0.3% 入场，固定止损 0.8% / 止盈 1.6%。调参时只看了 120 天；放到 2023～2025 回放每年亏三成左右，实盘 29 笔净亏
   - **consensus**：多交易所 BTC 永续共识，按 24h 成交额加权，pressure = a×动量 + b×OI 变化 - c×资金费率，超阈值开多/开空
 - **仓位**：权益的 10%（可配）
 - **风控**：连续亏损达上限进入冷静期（到点自动复位，非永久熔断）；当日亏损达权益比例上限停机。离场（止损/止盈/最大持仓）不受停机影响
 - **日志**：`logs/trades.jsonl` 每笔交易一条，含 pnl、持仓时长、手续费/资金费、MFE/MAE 与信号质量分项，供归因与参数标定；`logs/decision_journal.jsonl` 为逐轮快照，空转轮次降频并按体积轮转
 - **状态落盘**：`logs/runtime_state.json` 保存 Paper 权益/持仓、风控计数与未平仓交易，重启后续跑而不是回到初始本金；要归零就删掉它
-- **回测**：`python3 backtest.py` 用币安历史 K 线回放当前 config（信号 + 离场 + 风控 + 手续费），按分界日输出样本内/样本外结果，改参数前后各跑一次对照
+- **回测**：`python3 backtest.py` 用币安历史 K 线回放当前 config（信号 + 离场 + 风控 + 手续费），默认回放 1400 天并**按年**列出结果，另按分界日分样本内/样本外。改参数前后各跑一次对照；每一年都要看，别只看最近几个月（上次就是这样挑中了恰好最好的窗口）。不含资金费
 - **模拟交易模式**（`SIMULATE_ONLY=True`）：不配置 API Key，仅用公开 K 线自动多空决策；全仓 30 倍；每次决策后发 Telegram、写 Redis 记录交易价格
 
 ## 目录结构
@@ -60,7 +60,8 @@ poloniex_futures_bot/
   - MACD：`MACD_FAST`(12) / `MACD_SLOW`(26) / `MACD_SIGNAL`(9)、`MACD_ATR_FILTER`
   - RSI：`RSI_PERIOD`(14)、`RSI_OVERSOLD`(30)、`RSI_OVERBOUGHT`(70)
   - 组合：`RSI_NEUTRAL_LOW`(40)、`RSI_NEUTRAL_HIGH`(60) 用于过滤
-- `STOP_LOSS_RATIO` / `TAKE_PROFIT_RATIO`：止损/止盈比例（如 0.02 / 0.03）
+- `STOP_LOSS_ATR_MULT`：止损距离 = 倍数 × ATR ÷ 价格，开仓时定死（默认 3；0 = 改用固定的 `STOP_LOSS_RATIO`）；`STOP_LOSS_ATR_MIN_RATIO` 是下限
+- `STOP_LOSS_RATIO` / `TAKE_PROFIT_RATIO`：固定止损 / 止盈比例。`TAKE_PROFIT_RATIO = 0` 表示不设固定止盈（当前配置）
 - `POSITION_EQUITY_RATIO`：仓位占权益比例（默认 0.1）
 - `MAX_CONSECUTIVE_LOSSES`：连续亏损次数上限（默认 3）
 - `CONSECUTIVE_LOSS_COOLDOWN_SEC`：连亏达上限后的冷静期秒数（默认 14400），到点自动复位计数

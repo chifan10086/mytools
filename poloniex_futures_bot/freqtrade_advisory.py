@@ -30,12 +30,12 @@ from config import (
 )
 
 
-def _sl_tp_long(price: float) -> Tuple[float, float]:
-    return price * (1 - STOP_LOSS_RATIO), price * (1 + TAKE_PROFIT_RATIO)
+def _sl_tp_long(price: float) -> Tuple[float, Optional[float]]:
+    return price * (1 - STOP_LOSS_RATIO), (price * (1 + TAKE_PROFIT_RATIO) if TAKE_PROFIT_RATIO > 0 else None)
 
 
-def _sl_tp_short(price: float) -> Tuple[float, float]:
-    return price * (1 + STOP_LOSS_RATIO), price * (1 - TAKE_PROFIT_RATIO)
+def _sl_tp_short(price: float) -> Tuple[float, Optional[float]]:
+    return price * (1 + STOP_LOSS_RATIO), (price * (1 - TAKE_PROFIT_RATIO) if TAKE_PROFIT_RATIO > 0 else None)
 
 
 def compute_freqtrade_signal(

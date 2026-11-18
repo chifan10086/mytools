@@ -6,7 +6,7 @@ Poloniex BTC 永续合约交易机器人主循环。
 """
 import time
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import config_bootstrap  # noqa: F401  # 旧版 config.py 缺省字段时补齐
 
@@ -32,7 +32,7 @@ from config import (
 )
 import config as _cfg
 import strategy
-from strategy import parse_klines, compute_signal, check_stop_loss_take_profit
+from strategy import parse_klines, compute_signal, check_exit_levels, entry_stop_ratio, exit_levels
 from risk_manager import RiskManager
 from paper_engine import PaperEngine
 from exchange import (
@@ -71,6 +71,10 @@ _last_signal_quality: Optional[float] = None  # 最近信号质量
 # 1h 周期下每分钟轮询，盘中被止损后信号仍是那根旧 K 线算出来的，不拦会在 1 分钟内原方向重开
 # （2026-10-06 15:52 止损、15:53 重开，同一信号亏两次）；回测每根 K 线只决策一次，不存在这种重开。
 _last_entry_signal_bar_ts: Optional[int] = None
+# 当前持仓自己的止损价 / 止盈价，开仓时按成交价定死（止损距离见 strategy.entry_stop_ratio），随运行状态落盘。
+# 止盈价为 None 表示这笔不设固定止盈。改了配置也不影响已经开出去的仓位。
+_position_sl_price: Optional[float] = None
+_position_tp_price: Optional[float] = None
 
 
 def _telegram_enabled() -> bool:
@@ -105,7 +109,7 @@ def _drop_open_bar(o: list, h: list, l: list, c: list, t: list) -> tuple:
 def _restore_state(path: str, paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecorder) -> None:
     """启动时从 RUNTIME_STATE_PATH 恢复 Paper 权益/持仓、风控计数与未平仓交易，重启不再归零。"""
     global _position_entry_time, _position_peak_ratio, _position_peak_for, _cycles_with_position
-    global _last_entry_signal_bar_ts
+    global _last_entry_signal_bar_ts, _position_sl_price, _position_tp_price
     st = load_state(path)
     if not st:
         return
@@ -121,6 +125,8 @@ def _restore_state(path: str, paper: Optional[PaperEngine], risk: RiskManager, t
     _position_peak_for = m.get("position_peak_for")
     _cycles_with_position = int(m.get("cycles_with_position") or 0)
     _last_entry_signal_bar_ts = m.get("last_entry_signal_bar_ts")
+    _position_sl_price = m.get("position_sl_price")
+    _position_tp_price = m.get("position_tp_price")
     if paper is not None:
         logger.info(
             "已从 %s 恢复：权益 %.2f 持仓 %s %.6f", path, paper.get_equity(), paper.position_side, paper.position_size
@@ -143,6 +149,8 @@ def _persist_state(path: str, paper: Optional[PaperEngine], risk: RiskManager, t
                 "position_peak_for": _position_peak_for,
                 "cycles_with_position": _cycles_with_position,
                 "last_entry_signal_bar_ts": _last_entry_signal_bar_ts,
+                "position_sl_price": _position_sl_price,
+                "position_tp_price": _position_tp_price,
             },
         },
     )
@@ -253,6 +261,20 @@ def _get_market_state_summary(mark_price: float) -> str:
         return f"获取失败: {str(e)}"
 
 
+def _current_exit_levels(
+    paper: Optional[PaperEngine], pos_side: str, entry_price: float
+) -> Tuple[Optional[float], Optional[float]]:
+    """
+    当前持仓的 (止损价, 止盈价)。优先用开仓时记下的；升级前开的老仓位没有这份记录，
+    用 Paper 引擎里存的那笔止损止盈价（当时按固定比例算的）；都没有再按配置的固定比例兜底。
+    """
+    if _position_sl_price is not None:
+        return _position_sl_price, _position_tp_price
+    if paper is not None and paper.stop_loss is not None:
+        return paper.stop_loss, paper.take_profit
+    return exit_levels(pos_side, entry_price, STOP_LOSS_RATIO)
+
+
 def _paper_costs(paper: Optional[PaperEngine]) -> tuple:
     """返回 (累计手续费, 累计资金费现金流)，用于按笔差分归集成本。"""
     if paper is None:
@@ -266,8 +288,9 @@ def _entry_context(
     quality_parts: Dict[str, float],
     position_scale: float,
     jm: Dict[str, Any],
+    stop_ratio: float,
 ) -> Dict[str, Any]:
-    """入场瞬间固化的决策上下文；止损止盈比例一并记下，便于日后改参后仍可解读旧样本。"""
+    """入场瞬间固化的决策上下文；这笔实际用的止损距离和止盈比例一并记下，便于日后改参后仍可解读旧样本。"""
     cx = jm.get("cross_exchange") or {}
     return {
         "strategy": str(getattr(_cfg, "STRATEGY", "")).strip().lower(),
@@ -277,7 +300,8 @@ def _entry_context(
         "global_pressure": cx.get("global_pressure"),
         "exchanges_ok": len(cx.get("exchanges_ok") or []),
         "book_imbalance": (jm.get("order_book") or {}).get("imbalance"),
-        "stop_loss_ratio": STOP_LOSS_RATIO,
+        "stop_loss_ratio": round(stop_ratio, 6),
+        "stop_loss_atr_mult": float(getattr(_cfg, "STOP_LOSS_ATR_MULT", 0) or 0),
         "take_profit_ratio": TAKE_PROFIT_RATIO,
     }
 
@@ -285,6 +309,7 @@ def _entry_context(
 def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecorder) -> None:
     global _cycles_with_position, _last_decision_rationale, _position_entry_time, _last_signal_quality
     global _position_peak_ratio, _position_peak_for, _last_entry_signal_bar_ts
+    global _position_sl_price, _position_tp_price
     jm: Dict[str, Any] = {"unix_ts": time.time()}
     try:
         # 1. K 线
@@ -362,13 +387,17 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
 
         # 4. 止损/止盈检查（有持仓时）。离场先于风控：停机期间仍须能平仓
         if pos_side and pos_size > 0:
-            sl_tp = check_stop_loss_take_profit(pos_side, entry_price, mark_price)
+            sl_px, tp_px = _current_exit_levels(paper, pos_side, entry_price)
+            jm["position_sl"] = sl_px
+            jm["position_tp"] = tp_px
+            sl_tp = check_exit_levels(pos_side, mark_price, sl_px, tp_px)
             if sl_tp:
                 hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
                 pnl = close_position(pos_side, pos_size, mark_price, paper)
                 risk.record_trade(pnl, equity)
                 _cycles_with_position = 0
                 _position_entry_time = None
+                _position_sl_price = _position_tp_price = None
                 equity_after = get_equity_and_position(paper, mark_price)[0]
                 trades.close_trade(mark_price, str(sl_tp), pnl, equity_after, *_paper_costs(paper))
                 notify_close(
@@ -404,6 +433,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
                     _position_entry_time = None
                     _position_peak_ratio = 0.0
                     _position_peak_for = None
+                    _position_sl_price = _position_tp_price = None
                     equity_after = get_equity_and_position(paper, mark_price)[0]
                     trades.close_trade(
                         mark_price, "profit_lock", pnl, equity_after, *_paper_costs(paper)
@@ -436,6 +466,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
                     risk.record_trade(pnl, equity)
                     _cycles_with_position = 0
                     _position_entry_time = None
+                    _position_sl_price = _position_tp_price = None
                     equity_after = get_equity_and_position(paper, mark_price)[0]
                     trades.close_trade(
                         mark_price, "max_hold_cycles", pnl, equity_after, *_paper_costs(paper)
@@ -465,16 +496,19 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
             jm["action"] = "risk_blocked"
             return
 
-        # 6. 仓位：按单笔风险预算定仓，再叠加风控建议的缩放
+        # 6. 仓位：按单笔风险预算定仓，再叠加风控建议的缩放。
+        # 止损距离在开仓这一刻按波动算好（STOP_LOSS_ATR_MULT），止损远仓位就小，触发止损时亏的钱不变
         position_scale = risk.suggest_position_scale()
         jm["position_scale"] = position_scale
+        stop_ratio = entry_stop_ratio(h, l, c)
+        jm["stop_ratio"] = stop_ratio
         if SIMULATE_ONLY:
             size = (
                 position_size_by_risk(
                     equity,
                     mark_price,
                     RISK_PER_TRADE,
-                    STOP_LOSS_RATIO,
+                    stop_ratio,
                     FUTURES_TAKER_FEE_RATE,
                     LEVERAGE,
                 )
@@ -504,9 +538,9 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
                     save_equity_redis(equity, INITIAL_EQUITY)
                 return
             _last_entry_signal_bar_ts = signal_bar_ts
-            # 策略给的 sl/tp 以信号 K 线收盘价为基准，实际按 mark_price 成交；离场判定用的是成交价×比例，
-            # 这里按成交价重算，日志与通知里的止损止盈才和真实触发价一致
-            sl, tp = strategy._sl_tp_long(mark_price) if direction == 1 else strategy._sl_tp_short(mark_price)
+            # 策略给的 sl/tp 以信号 K 线收盘价为基准，实际按 mark_price 成交；这里按成交价和这次的止损距离重算，
+            # 记到 _position_sl_price / _position_tp_price，离场判定、日志、通知用的都是这一份
+            sl, tp = exit_levels("LONG" if direction == 1 else "SHORT", mark_price, stop_ratio)
 
         if pos_side == "LONG" and direction == -1:
             hold_time = int(time.time() - _position_entry_time) if _position_entry_time else None
@@ -531,6 +565,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
             costs_before = _paper_costs(paper)
             open_short(mark_price, size, sl, tp, paper)
             _position_entry_time = time.time()
+            _position_sl_price, _position_tp_price = sl, tp
             equity_now = get_equity_and_position(paper, mark_price)[0]
             trades.open_trade(
                 "SHORT",
@@ -539,7 +574,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
                 sl,
                 tp,
                 equity_now,
-                _entry_context(signal_quality, quality_parts, position_scale, jm),
+                _entry_context(signal_quality, quality_parts, position_scale, jm, stop_ratio),
                 *costs_before,
             )
             notify_trade(
@@ -580,6 +615,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
             costs_before = _paper_costs(paper)
             open_long(mark_price, size, sl, tp, paper)
             _position_entry_time = time.time()
+            _position_sl_price, _position_tp_price = sl, tp
             equity_now = get_equity_and_position(paper, mark_price)[0]
             trades.open_trade(
                 "LONG",
@@ -588,7 +624,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
                 sl,
                 tp,
                 equity_now,
-                _entry_context(signal_quality, quality_parts, position_scale, jm),
+                _entry_context(signal_quality, quality_parts, position_scale, jm, stop_ratio),
                 *costs_before,
             )
             notify_trade(
@@ -617,6 +653,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
             costs_before = _paper_costs(paper)
             open_long(mark_price, size, sl, tp, paper)
             _position_entry_time = time.time()
+            _position_sl_price, _position_tp_price = sl, tp
             equity_now = get_equity_and_position(paper, mark_price)[0]
             trades.open_trade(
                 "LONG",
@@ -625,7 +662,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
                 sl,
                 tp,
                 equity_now,
-                _entry_context(signal_quality, quality_parts, position_scale, jm),
+                _entry_context(signal_quality, quality_parts, position_scale, jm, stop_ratio),
                 *costs_before,
             )
             notify_trade(
@@ -646,6 +683,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
             costs_before = _paper_costs(paper)
             open_short(mark_price, size, sl, tp, paper)
             _position_entry_time = time.time()
+            _position_sl_price, _position_tp_price = sl, tp
             equity_now = get_equity_and_position(paper, mark_price)[0]
             trades.open_trade(
                 "SHORT",
@@ -654,7 +692,7 @@ def run_once(paper: Optional[PaperEngine], risk: RiskManager, trades: TradeRecor
                 sl,
                 tp,
                 equity_now,
-                _entry_context(signal_quality, quality_parts, position_scale, jm),
+                _entry_context(signal_quality, quality_parts, position_scale, jm, stop_ratio),
                 *costs_before,
             )
             notify_trade(

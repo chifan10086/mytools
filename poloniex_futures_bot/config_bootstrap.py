@@ -7,6 +7,9 @@ import config as _cfg
 
 _DEFAULTS = {
     "FREQTRADE_CONFIRM": False,
+    # 旧版 config 没有这两项时按「固定比例止损」运行，行为和升级前一致
+    "STOP_LOSS_ATR_MULT": 0.0,
+    "STOP_LOSS_ATR_MIN_RATIO": 0.002,
     "FT_EMA_SHORT": 12,
     "FT_EMA_LONG": 26,
     "FT_MACD_FAST": 12,
